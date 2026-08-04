@@ -394,6 +394,10 @@ def pagina(conteudo, ativo=''):
         else:
             nav.append(('/minhas-entrevistas', '🎥', 'Entrevistas'))
         if tem_permissao(u, 'painel'):
+                    if u.tipo in ('admin', 'empresa'):
+            nav.append(('/config-etapas', '🧪', 'Etapas e Testes'))
+            nav.append(('/monitoramento', '📊', 'Monitoramento'))
+            nav.append(('/financeiro', '💰', 'Financeiro'))
             nav.append(('/painel', '🔑', 'Meu Painel'))
     itens = ''
     for href, icone, nome in nav:
@@ -1650,7 +1654,7 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '9.0.0',
+        'status': 'online', 'versao': '10.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
                     'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens',
@@ -1970,6 +1974,7 @@ def pipeline_etapa(cid):
     if etapa not in ETAPAS:
         return jsonify({'erro': 'Etapa inválida'}), 400
     c.etapa = etapa
+    db.session.execute(text("UPDATE candidatura SET etapa_atualizada_em = :t WHERE id = :i"), {'t': datetime.utcnow(), 'i': c.id})
     if etapa == 'contratado':
         c.status = 'aprovado'
     elif etapa == 'rejeitado':
@@ -2627,7 +2632,7 @@ with app.app_context():
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v9.0')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v10.0')
     print('  ⚙️ Permissoes + Edicao de candidatos + Chat')
     print('=' * 56)
     print('  🔗 Menu:        http://localhost:5000')
