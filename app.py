@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v7.0 — chat em tempo real, pipeline, ranking, cadastro."""
+"""Ecossistema de RH Inovador v8.0 — central de entrevistas, pipeline, chat, ranking."""
 
 import os
 import re
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, session, redirect, url_for
@@ -124,6 +124,19 @@ class Mensagem(db.Model):
     lida = db.Column(db.Boolean, default=False)
     criada_em = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Entrevista(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    empresa_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    data_hora = db.Column(db.DateTime, nullable=False)
+    tipo = db.Column(db.String(30), default='Video')
+    link = db.Column(db.String(250))
+    status = db.Column(db.String(20), default='agendada')
+    nota = db.Column(db.Float)
+    comentario = db.Column(db.Text)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
 # ================= HELPERS =================
 def parse_float(s):
     if not s:
@@ -159,6 +172,13 @@ def contar_nao_lidas(u):
     for c in convs:
         total += Mensagem.query.filter_by(conversa_id=c.id, lida=False).filter(Mensagem.remetente_id != u.id).count()
     return total
+
+def badge_entrevista(c):
+    ent = Entrevista.query.filter_by(vaga_id=c.vaga_id, candidato_id=c.candidato_id).order_by(Entrevista.id.desc()).first()
+    if not ent:
+        return ''
+    cor = {'agendada': '#f59e0b', 'confirmada': '#22d3ee', 'realizada': '#10b981', 'cancelada': '#ef4444'}.get(ent.status, '#8fa3c0')
+    return '<span class="pill" style="background:rgba(245,158,11,.12);color:' + cor + '">🎥 ' + ent.data_hora.strftime('%d/%m %H:%M') + '</span>'
 
 # ================= SEED =================
 def criar_dados_iniciais():
@@ -335,7 +355,10 @@ def pagina(conteudo, ativo=''):
         nav.append(('/importar-plano', '📥', 'Importar Plano'))
         if u.tipo in ('admin', 'empresa'):
             nav.append(('/pipeline', '📋', 'Pipeline'))
+            nav.append(('/entrevistas', '🎥', 'Entrevistas'))
             nav.append(('/cadastrar-candidato', '👤➕', 'Cadastrar Candidato'))
+        else:
+            nav.append(('/minhas-entrevistas', '🎥', 'Entrevistas'))
         nav.append(('/painel', '🔑', 'Meu Painel'))
     itens = ''
     for href, icone, nome in nav:
@@ -386,12 +409,12 @@ header h1{font-size:22px}header h1 span{color:#22d3ee}
 .tabela td{padding:10px;border-bottom:1px solid rgba(22,40,63,.8)}
 .tabela tr:hover td{background:rgba(15,33,64,.6)}
 .pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px}
-.pill.aberta,.pill.candidato,.pill.contratado{background:rgba(16,185,129,.14);color:#10b981}
-.pill.fechada,.pill.rejeitado{background:rgba(239,68,68,.14);color:#ef4444}
+.pill.aberta,.pill.candidato,.pill.contratado,.pill.realizada{background:rgba(16,185,129,.14);color:#10b981}
+.pill.fechada,.pill.rejeitado,.pill.cancelada{background:rgba(239,68,68,.14);color:#ef4444}
 .pill.empresa{background:rgba(245,158,11,.14);color:#f59e0b}
 .pill.admin{background:rgba(168,85,247,.14);color:#a855f7}
-.pill.pendente,.pill.triagem,.pill.proposta{background:rgba(245,158,11,.14);color:#f59e0b}
-.pill.entrevista{background:rgba(34,211,238,.14);color:#22d3ee}
+.pill.pendente,.pill.triagem,.pill.proposta,.pill.agendada{background:rgba(245,158,11,.14);color:#f59e0b}
+.pill.entrevista,.pill.confirmada{background:rgba(34,211,238,.14);color:#22d3ee}
 .pill.nv{background:rgba(239,68,68,.2);color:#f87171}
 form label{display:block;margin:12px 0 5px;font-size:13px;color:#9fb0c8}
 form input,form select,form textarea{width:100%;background:rgba(10,22,40,.8);border:1px solid rgba(28,47,74,.8);border-radius:8px;padding:10px 12px;color:#fff;font-size:14px}
@@ -411,10 +434,11 @@ form input:focus,form select:focus,form textarea:focus{outline:none;border-color
 .kcard:hover{border-color:rgba(34,211,238,.5)}
 .kcard b{font-size:13px;display:block}
 .kcard .meta{font-size:11px;color:#8fa3c0;margin-top:4px}
-.kbtns{display:flex;gap:6px;margin-top:8px}
+.kbtns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
 .kbtn{background:rgba(30,41,59,.9);color:#fff;border:1px solid rgba(59,130,246,.35);border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;text-decoration:none;display:inline-block}
 .kbtn:hover{background:#1d4ed8}
 .kbtn.verde:hover{background:#059669}
+.kbtn.roxo:hover{background:#7c3aed}
 .chatbox{max-height:380px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:6px 2px}
 .bubble{max-width:75%;padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.45}
 .bubble.minha{align-self:flex-end;background:linear-gradient(90deg,#1d4ed8,#0ea5e9);border-bottom-right-radius:4px}
@@ -430,7 +454,7 @@ footer{margin-top:24px;color:#475569;font-size:12px}
 <aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v7.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v8.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -564,6 +588,104 @@ def pagina_cadastrar_candidato():
           'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
     return pagina(h, '/candidatos')
 
+# ================= CENTRAL DE ENTREVISTAS =================
+@app.route('/entrevistas')
+@gestor_required
+def entrevistas():
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    h = '<h1>Central de Entrevistas <span>// 🎥</span></h1>'
+    h += '<p class="sub">Agende, confirme e avalie entrevistas de cada vaga.</p>'
+    if not vagas:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma vaga cadastrada.</p></div>'
+        return pagina(h, '/entrevistas')
+    h += '<div class="caixa-busca"><select id="selvaga" onchange="location.href=\'/entrevistas?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if v and vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/pipeline?vaga=' + str(v.id) + '">📋 Pipeline</a></div>'
+    ent_list = Entrevista.query.filter_by(vaga_id=v.id).order_by(Entrevista.data_hora.desc()).all()
+    if not ent_list:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma entrevista agendada para esta vaga. '
+        h += 'Agende direto pelo <a class="link" href="/pipeline?vaga=' + str(v.id) + '">Pipeline</a> (botão 🎥 no cartão do candidato).</p></div>'
+    else:
+        h += '<div class="painel"><table class="tabela"><thead><tr><th>Candidato</th><th>Data/Hora</th><th>Tipo</th><th>Status</th><th>Nota</th><th>Ações</th></tr></thead><tbody>'
+        for e in ent_list:
+            cand = Usuario.query.get(e.candidato_id)
+            nota = ('<b style="color:#22d3ee">' + str(int(e.nota)) + '/10</b>') if e.nota is not None else '-'
+            acoes = ''
+            if e.status == 'agendada':
+                acoes += '<a class="kbtn" href="/entrevista/' + str(e.id) + '/avaliar">⭐ Avaliar</a>'
+            if e.status in ('agendada', 'confirmada'):
+                acoes += '<a class="kbtn" href="/api/entrevistas/' + str(e.id) + '/status?novo=realizada">✅ Realizar</a>'
+                acoes += '<a class="kbtn" href="/api/entrevistas/' + str(e.id) + '/status?novo=cancelada">❌ Cancelar</a>'
+            if e.status == 'agendada':
+                acoes += '<a class="kbtn" href="/api/entrevistas/' + str(e.id) + '/status?novo=confirmada">✔ Confirmada</a>'
+            if e.comentario:
+                acoes += '<span style="color:#8fa3c0;font-size:11px">💬 ' + e.comentario[:50] + '</span>'
+            h += ('<tr><td><b>' + (cand.nome if cand else '-') + '</b></td>'
+                  '<td>' + e.data_hora.strftime('%d/%m/%Y %H:%M') + '</td>'
+                  '<td>' + (e.tipo or '-') + '</td>'
+                  '<td><span class="pill ' + e.status + '">' + e.status + '</span></td>'
+                  '<td>' + nota + '</td>'
+                  '<td><div class="kbtns">' + acoes + '</div></td></tr>')
+        h += '</tbody></table></div>'
+    return pagina(h, '/entrevistas')
+
+@app.route('/entrevista/<int:eid>/avaliar')
+@gestor_required
+def avaliar_entrevista(eid):
+    e = Entrevista.query.get(eid)
+    if not e:
+        return pagina('<h1>Entrevista não encontrada</h1>', '/entrevistas')
+    cand = Usuario.query.get(e.candidato_id)
+    v = Vaga.query.get(e.vaga_id)
+    h = '<h1>⭐ Avaliar Entrevista <span>// ' + (cand.nome if cand else '') + '</span></h1>'
+    h += '<p class="sub">💼 ' + (v.titulo if v else '') + ' • ' + e.data_hora.strftime('%d/%m/%Y %H:%M') + '</p>'
+    h += '<div class="painel" style="max-width:560px"><form id="f">'
+    h += '<label>Nota (0 a 10) *</label><input id="nota" type="number" min="0" max="10" step="1" required placeholder="ex: 8">'
+    h += '<label>Comentário</label><textarea id="comentario" rows="4" placeholder="Impressões sobre o candidato..."></textarea>'
+    h += '<div style="margin-top:16px"><button class="btn verde" type="submit">Salvar avaliação</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/entrevistas/' + str(eid) + '/avaliar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({nota:document.getElementById("nota").value,comentario:document.getElementById("comentario").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Avaliação salva! <a class=link href=/entrevistas>Voltar para entrevistas</a>";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
+    return pagina(h, '/entrevistas')
+
+@app.route('/minhas-entrevistas')
+@login_required
+def minhas_entrevistas():
+    u = usuario_atual()
+    ent_list = Entrevista.query.filter_by(candidato_id=u.id).order_by(Entrevista.data_hora.desc()).all()
+    h = '<h1>Minhas Entrevistas <span>// 🎥</span></h1>'
+    h += '<p class="sub">Acompanhe as entrevistas agendadas para você.</p>'
+    if not ent_list:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma entrevista agendada ainda. '
+        h += 'Quando uma empresa marcar uma entrevista para você, ela aparecerá aqui. <a class="link" href="/vagas">Ver vagas →</a></p></div>'
+    else:
+        for e in ent_list:
+            v = Vaga.query.get(e.vaga_id)
+            cand_ent = Entrevista.query.filter_by(vaga_id=e.vaga_id, candidato_id=u.id).order_by(Entrevista.id.desc()).first()
+            status_badge = '<span class="pill ' + e.status + '">' + e.status + '</span>'
+            link_acao = ''
+            if e.status == 'agendada':
+                link_acao = '<a class="kbtn verde" href="/api/entrevistas/' + str(e.id) + '/status?novo=confirmada">✔ Confirmar presença</a>'
+            if e.link:
+                link_acao += ' <a class="kbtn" href="' + e.link + '" target="_blank">🔗 Link da sala</a>'
+            if e.status == 'realizada' and e.nota is not None:
+                link_acao += ' <span class="pill realizada">⭐ Nota: ' + str(int(e.nota)) + '/10</span>'
+            h += ('<div class="painel"><div class="status" style="justify-content:space-between;flex-wrap:wrap">'
+                  '<div><h3>🎥 ' + (v.titulo if v else 'Entrevista') + '</h3>'
+                  '<p style="color:#8fa3c0;font-size:13px;margin-top:6px">📅 <b>' + e.data_hora.strftime('%d/%m/%Y às %H:%M') + '</b> • Tipo: ' + (e.tipo or '-') + ' • Empresa: ' + (v.empresa if v else '-') + '</p>'
+                  + (('<p style="color:#8fa3c0;font-size:12px;margin-top:4px">💬 ' + e.comentario + '</p>') if e.comentario else '') + '</div>'
+                  '<div style="text-align:right">' + status_badge + '<br><br>' + link_acao + '</div></div></div>')
+    return pagina(h, '/minhas-entrevistas')
+
 # ================= MENSAGENS (CHAT) =================
 @app.route('/mensagens')
 @login_required
@@ -622,7 +744,6 @@ def chat(cid):
     v = Vaga.query.get(c.vaga_id)
     outro_id = c.empresa_id if u.id == c.candidato_id else c.candidato_id
     outro = Usuario.query.get(outro_id)
-    # marca como lidas as mensagens do outro
     for m in Mensagem.query.filter_by(conversa_id=cid, lida=False).filter(Mensagem.remetente_id != u.id).all():
         m.lida = True
     db.session.commit()
@@ -669,6 +790,7 @@ def pipeline():
         sel = ' selected' if v and vg.id == v.id else ''
         h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
     h += '</select><a class="btn cinza" href="/vagas/' + str(v.id) + '/ranking">🏆 Ranking</a>'
+    h += '<a class="btn cinza" href="/entrevistas?vaga=' + str(v.id) + '">🎥 Entrevistas</a>'
     h += '<a class="btn cinza" href="/vagas/' + str(v.id) + '">📋 Detalhes</a></div>'
     cands = Candidatura.query.filter_by(vaga_id=v.id).all()
     por_etapa = {e: [] for e in ETAPAS}
@@ -693,6 +815,11 @@ def pipeline():
                 btns += '<a class="kbtn" href="/mensagens/' + str(conv.id) + '">💬</a>'
             else:
                 btns += '<a class="kbtn" href="/conversa/' + str(v.id) + '">💬</a>'
+            ent = Entrevista.query.filter_by(vaga_id=v.id, candidato_id=c.candidato_id).order_by(Entrevista.id.desc()).first()
+            if ent:
+                btns += '<a class="kbtn roxo" href="/entrevistas?vaga=' + str(v.id) + '">🎥 ' + ent.status + '</a>'
+            else:
+                btns += '<a class="kbtn roxo" href="/agendar-entrevista?candidatura=' + str(c.id) + '">🎥 Agendar</a>'
             cor_score = '#10b981' if c.match_score >= 80 else ('#f59e0b' if c.match_score >= 65 else '#ef4444')
             h += ('<div class="kcard"><b>' + (cand.nome if cand else 'Candidato') + '</b>'
                   '<div class="meta">Match: <b style="color:' + cor_score + '">' + str(int(c.match_score or 0)) + '%</b></div>'
@@ -704,6 +831,34 @@ def pipeline():
           'fetch("/api/pipeline/"+cid+"/etapa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({etapa:eta})})'
           '.then(function(r){return r.json();}).then(function(j){if(j.ok){location.reload();}else{alert(j.erro||"Erro");}});}</script>')
     return pagina(h, '/pipeline')
+
+@app.route('/agendar-entrevista')
+@gestor_required
+def agendar_entrevista():
+    c = Candidatura.query.get(request.args.get('candidatura', type=int))
+    if not c:
+        return pagina('<h1>Candidatura não encontrada</h1>', '/pipeline')
+    v = Vaga.query.get(c.vaga_id)
+    cand = Usuario.query.get(c.candidato_id)
+    h = '<h1>🎥 Agendar Entrevista <span>// ' + (cand.nome if cand else '') + '</span></h1>'
+    h += '<p class="sub">💼 ' + (v.titulo if v else '') + ' • ' + (v.empresa if v else '') + '</p>'
+    h += '<div class="painel" style="max-width:560px"><form id="f">'
+    h += '<label>Data *</label><input id="data" type="date" required value="' + (datetime.utcnow() + timedelta(days=2)).strftime('%Y-%m-%d') + '">'
+    h += '<label>Hora *</label><input id="hora" type="time" required value="14:00">'
+    h += '<label>Tipo</label><select id="tipo"><option value="Video">🎥 Vídeo</option><option value="Presencial">🏢 Presencial</option><option value="Telefonica">📞 Telefônica</option></select>'
+    h += '<label>Link da sala (opcional)</label><input id="link" placeholder="https://meet.google.com/...">'
+    h += '<div style="margin-top:16px"><button class="btn" type="submit">Agendar entrevista</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/entrevistas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({candidatura:' + str(c.id) + ',data:document.getElementById("data").value,'
+          'hora:document.getElementById("hora").value,tipo:document.getElementById("tipo").value,'
+          'link:document.getElementById("link").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Entrevista agendada! <a class=link href=/entrevistas>Ver central →</a>";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
+    return pagina(h, '/entrevistas')
 
 # ================= MEU PAINEL =================
 @app.route('/painel')
@@ -718,6 +873,19 @@ def painel():
             for sk in [s.strip() for s in p.skills.split(',') if s.strip()]:
                 h += '<span class="pill candidato">' + sk + '</span>'
             h += ' <a class="link" href="/perfil">editar →</a></div></div>'
+        ents = Entrevista.query.filter_by(candidato_id=u.id).order_by(Entrevista.data_hora.desc()).all()
+        h += '<div class="painel"><h4>🎥 Minhas Entrevistas</h4>'
+        if ents:
+            for e in ents[:3]:
+                v = Vaga.query.get(e.vaga_id)
+                h += ('<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(28,47,74,.5)">'
+                      '<div><b>' + (v.titulo if v else 'Vaga') + '</b> • ' + (v.empresa if v else '') + '<br>'
+                      '<span style="color:#8fa3c0;font-size:12px">📅 ' + e.data_hora.strftime('%d/%m/%Y %H:%M') + '</span></div>'
+                      '<span class="pill ' + e.status + '">' + e.status + '</span></div>')
+            h += '<p style="margin-top:10px"><a class="link" href="/minhas-entrevistas">Ver todas →</a></p>'
+        else:
+            h += '<p style="color:#8fa3c0">Nenhuma entrevista agendada ainda.</p>'
+        h += '</div>'
         cands = Candidatura.query.filter_by(candidato_id=u.id).order_by(Candidatura.id.desc()).all()
         h += '<div class="painel"><h4>Minhas Candidaturas</h4>'
         if cands:
@@ -740,6 +908,7 @@ def painel():
         h += '</div>'
         h += '<div class="painel"><h4>Estatísticas</h4><div class="status">'
         h += '<div class="item"><span class="dot ciano"></span> Candidaturas: <b>' + str(len(cands)) + '</b></div>'
+        h += '<div class="item"><span class="dot roxo"></span> Entrevistas: <b>' + str(len(ents)) + '</b></div>'
         h += '<div class="item"><span class="dot"></span> Vagas abertas: <b>' + str(Vaga.query.filter_by(status='aberta').count()) + '</b></div>'
         scores = [c.match_score or 0 for c in cands]
         h += '<div class="item"><span class="dot roxo"></span> Match médio: <b>' + (str(int(sum(scores)/len(scores))) + '%' if scores else '—') + '</b></div>'
@@ -752,6 +921,8 @@ def painel():
         else:
             h += '<p style="color:#8fa3c0">Complete seu perfil: <a class="link" href="/cadastrar-empresa">Cadastrar Empresa →</a></p>'
         h += '</div>'
+        minhas_vagas_ids = [v.id for v in Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()]
+        total_ents = Entrevista.query.filter(Entrevista.vaga_id.in_(minhas_vagas_ids)).count() if minhas_vagas_ids else 0
         vagas = Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()
         h += '<div class="painel"><h4>Minhas Vagas</h4>'
         if vagas:
@@ -770,6 +941,7 @@ def painel():
         h += '<div class="painel"><h4>Gestão</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas (' + str(total_ents) + ')</a> '
         h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
         h += '<a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
         h += '</div></div>'
@@ -780,11 +952,13 @@ def painel():
         h += '<div class="item"><span class="dot roxo"></span> Vagas: <b>' + str(Vaga.query.count()) + '</b></div>'
         h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
         h += '<div class="item"><span class="dot ciano"></span> Conversas: <b>' + str(Conversa.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot roxo"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
         h += '</div></div>'
         h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> '
         h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
         h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
         h += '<a class="btn verde" href="/importar-plano">📥 Importar Plano PCS</a> '
         h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
@@ -818,7 +992,7 @@ def menu():
     h += '<div class="item"><span class="dot"></span> Servidor Online</div>'
     h += '<div class="item"><span class="dot ciano"></span> Conexões Ativas: <b id="conn2">0/' + str(MAX_CONEXOES) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Agentes Autônomos: <b>5 ativos</b></div>'
-    h += '<div class="item"><span class="dot"></span> Módulos: <b>12</b></div>'
+    h += '<div class="item"><span class="dot"></span> Módulos: <b>13</b></div>'
     h += '</div></div>'
     h += '<script>setInterval(function(){fetch("/api/health").then(function(r){return r.json();}).then(function(d){'
     h += 'var el=document.getElementById("conn2");if(el)el.textContent=d.conexoes_ativas+"/"+d.conexoes_maximas;}).catch(function(){});},3000);</script>'
@@ -936,6 +1110,7 @@ def detalhe_vaga(vid):
     if u and u.tipo in ('admin', 'empresa'):
         h += '<a class="btn cinza" href="/vagas/' + str(vid) + '/ranking">🏆 Ver Ranking</a>'
         h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a>'
+        h += '<a class="btn cinza" href="/entrevistas?vaga=' + str(vid) + '">🎥 Entrevistas</a>'
     h += '</div>'
     return pagina(h, '/vagas')
 
@@ -955,7 +1130,7 @@ def ranking_vaga(vid):
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma candidatura nesta vaga ainda. <a class="link" href="/vagas/' + str(vid) + '">Ver vaga →</a></p></div>'
     else:
         medalhas = ['🥇', '🥈', '🥉']
-        h += '<div class="painel"><table class="tabela"><thead><tr><th>Posição</th><th>Candidato</th><th>E-mail</th><th>Match</th><th>Etapa</th><th>Status</th><th>Chat</th></tr></thead><tbody>'
+        h += '<div class="painel"><table class="tabela"><thead><tr><th>Posição</th><th>Candidato</th><th>E-mail</th><th>Match</th><th>Entrevista</th><th>Etapa</th><th>Status</th><th>Chat</th></tr></thead><tbody>'
         for i, c in enumerate(cands):
             cand = Usuario.query.get(c.candidato_id)
             pos = i + 1
@@ -965,9 +1140,17 @@ def ranking_vaga(vid):
             conv = Conversa.query.filter_by(vaga_id=vid, candidato_id=c.candidato_id).first()
             chat_link = ('<a class="link" href="/mensagens/' + str(conv.id) + '">💬</a>' if conv
                          else '<a class="link" href="/conversa/' + str(vid) + '">💬</a>')
+            ent = Entrevista.query.filter_by(vaga_id=vid, candidato_id=c.candidato_id).order_by(Entrevista.id.desc()).first()
+            ent_html = '-'
+            if ent:
+                if ent.nota is not None:
+                    ent_html = '<span class="pill realizada">⭐ ' + str(int(ent.nota)) + '/10</span>'
+                else:
+                    ent_html = '<span class="pill ' + ent.status + '">🎥 ' + ent.status + '</span>'
             h += ('<tr><td>' + medalha + '</td><td><b>' + (cand.nome if cand else '-') + '</b></td>'
                   '<td>' + (cand.email if cand else '-') + '</td>'
                   '<td><b style="color:' + cor_score + '">' + str(int(c.match_score)) + '%</b></td>'
+                  '<td>' + ent_html + '</td>'
                   '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
                   '<td><span class="pill ' + c.status + '">' + c.status + '</span></td>'
                   '<td>' + chat_link + '</td></tr>')
@@ -978,7 +1161,8 @@ def ranking_vaga(vid):
             h += '<div class="painel"><h4>⭐ Melhor Candidato</h4><p style="font-size:14px">'
             h += '<b>' + cand_top.nome + '</b> lidera com <b style="color:#22d3ee">' + str(int(melhor.match_score)) + '%</b> de compatibilidade.</p></div>'
     h += '<div class="status"><a class="btn cinza" href="/vagas/' + str(vid) + '">← Voltar para a vaga</a> '
-    h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a></div>'
+    h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a> '
+    h += '<a class="btn cinza" href="/entrevistas?vaga=' + str(vid) + '">🎥 Entrevistas</a></div>'
     return pagina(h, '/vagas')
 
 @app.route('/vagas/<int:vid>/candidatar')
@@ -1078,6 +1262,7 @@ def recrutamento():
     h += '<div class="item"><span class="dot ciano"></span> Vagas ativas: <b>' + str(Vaga.query.filter_by(status='aberta').count()) + '</b></div>'
     h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Candidatos: <b>' + str(Usuario.query.filter_by(tipo='candidato').count()) + '</b></div>'
+    h += '<div class="item"><span class="dot ciano"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
     h += '</div></div>'
     cards = [
         ('🧠', 'Matching Preditivo', 'IA compara skills, experiência e fit cultural para ranquear os melhores talentos.', '#3b82f6'),
@@ -1131,8 +1316,11 @@ def analytics():
     total_candidatos = Usuario.query.filter_by(tipo='candidato').count()
     total_empresas = Usuario.query.filter_by(tipo='empresa').count()
     total_conversas = Conversa.query.count()
+    total_entrevistas = Entrevista.query.count()
+    realizadas = Entrevista.query.filter_by(status='realizada').count()
     scores = [c.match_score or 0 for c in Candidatura.query.all()]
     score_medio = round(sum(scores) / len(scores), 1) if scores else 0
+    taxa_conversao = round(realizadas / total_candidaturas * 100, 1) if total_candidaturas else 0
     h = '<h1>Analytics <span>// People Analytics</span></h1>'
     h += '<p class="sub">KPIs e dashboards em tempo real do ecossistema</p>'
     h += '<div class="painel"><h4>KPIs Principais</h4><div class="status">'
@@ -1141,6 +1329,8 @@ def analytics():
     h += '<div class="item"><span class="dot roxo"></span> Candidatos: <b>' + str(total_candidatos) + '</b></div>'
     h += '<div class="item"><span class="dot"></span> Empresas: <b>' + str(total_empresas) + '</b></div>'
     h += '<div class="item"><span class="dot ciano"></span> Conversas: <b>' + str(total_conversas) + '</b></div>'
+    h += '<div class="item"><span class="dot roxo"></span> Entrevistas: <b>' + str(total_entrevistas) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Taxa conversão: <b>' + str(taxa_conversao) + '%</b></div>'
     h += '<div class="item"><span class="dot"></span> Match médio: <b>' + str(score_medio) + '%</b></div>'
     h += '</div></div>'
     por_nivel = {}
@@ -1167,6 +1357,15 @@ def analytics():
                 nome_et, cor = ETAPAS_INFO[et]
                 h += '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span style="color:' + cor + '">●</span> <span>' + nome_et + '</span><b>' + str(qtd) + '</b></div>'
                 h += '<div style="background:rgba(10,22,40,.8);border-radius:6px;height:10px;margin-top:4px"><div style="background:' + cor + ';width:' + str(min(100, int(qtd / max(1, max(por_etapa.values())) * 100))) + '%;height:10px;border-radius:6px"></div></div></div>'
+        h += '</div>'
+    ent_status = {}
+    for e in Entrevista.query.all():
+        ent_status[e.status] = ent_status.get(e.status, 0) + 1
+    if ent_status:
+        h += '<div class="painel"><h4>Entrevistas por Status</h4>'
+        for st, qtd in ent_status.items():
+            cor = {'agendada': '#f59e0b', 'confirmada': '#22d3ee', 'realizada': '#10b981', 'cancelada': '#ef4444'}.get(st, '#8fa3c0')
+            h += '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span style="color:' + cor + '">●</span> <span>' + st + '</span><b>' + str(qtd) + '</b></div></div>'
         h += '</div>'
     ultimas = Candidatura.query.order_by(Candidatura.id.desc()).limit(10).all()
     if ultimas:
@@ -1263,14 +1462,14 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '7.0.0',
+        'status': 'online', 'versao': '8.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
-                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens'],
+                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens', 'entrevistas'],
         'agentes': ['sourcing', 'triagem', 'scheduling', 'followup', 'dei'],
         'trilhas': Trilha.query.count(), 'niveis': Nivel.query.count(), 'vagas': Vaga.query.count(),
         'candidaturas': Candidatura.query.count(), 'conversas': Conversa.query.count(),
-        'mensagens': Mensagem.query.count(),
+        'mensagens': Mensagem.query.count(), 'entrevistas': Entrevista.query.count(),
     })
 
 @app.route('/api/trilhas')
@@ -1489,6 +1688,75 @@ def pipeline_etapa(cid):
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Candidato movido para ' + ETAPAS_INFO[etapa][0], 'etapa': etapa})
 
+# ================= ENTREVISTAS (APIS) =================
+@app.route('/api/entrevistas/cadastrar', methods=['POST'])
+def api_cadastrar_entrevista():
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    c = Candidatura.query.get(d.get('candidatura', type=int) or 0)
+    if not c:
+        return jsonify({'erro': 'Candidatura não encontrada'}), 404
+    data = (d.get('data') or '').strip()
+    hora = (d.get('hora') or '').strip()
+    if not data or not hora:
+        return jsonify({'erro': 'Informe data e hora'}), 400
+    try:
+        data_hora = datetime.strptime(data + ' ' + hora, '%Y-%m-%d %H:%M')
+    except Exception:
+        return jsonify({'erro': 'Data/hora inválidas'}), 400
+    emp = u if u.tipo == 'empresa' else (usuario_empresa_da_vaga(Vaga.query.get(c.vaga_id)) or u)
+    ent = Entrevista(vaga_id=c.vaga_id, candidato_id=c.candidato_id, empresa_id=emp.id,
+                     data_hora=data_hora, tipo=(d.get('tipo') or 'Video'),
+                     link=(d.get('link') or '').strip(), status='agendada')
+    db.session.add(ent)
+    if c.etapa == 'triagem':
+        c.etapa = 'entrevista'
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Entrevista agendada!', 'entrevista_id': ent.id})
+
+@app.route('/api/entrevistas/<int:eid>/status')
+def api_entrevista_status(eid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    e = Entrevista.query.get(eid)
+    if not e:
+        return jsonify({'erro': 'Entrevista não encontrada'}), 404
+    novo = request.args.get('novo', '')
+    if novo not in ('agendada', 'confirmada', 'realizada', 'cancelada'):
+        return jsonify({'erro': 'Status inválido'}), 400
+    e.status = novo
+    if novo == 'cancelada':
+        c = Candidatura.query.filter_by(vaga_id=e.vaga_id, candidato_id=e.candidato_id).first()
+        if c and c.etapa == 'entrevista':
+            c.etapa = 'triagem'
+    db.session.commit()
+    return redirect(url_for('entrevistas', vaga=e.vaga_id))
+
+@app.route('/api/entrevistas/<int:eid>/avaliar', methods=['POST'])
+def api_avaliar_entrevista(eid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    e = Entrevista.query.get(eid)
+    if not e:
+        return jsonify({'erro': 'Entrevista não encontrada'}), 404
+    d = request.get_json(force=True)
+    try:
+        nota = float(d.get('nota'))
+        if nota < 0 or nota > 10:
+            raise ValueError
+    except Exception:
+        return jsonify({'erro': 'Nota deve ser entre 0 e 10'}), 400
+    e.nota = nota
+    e.comentario = (d.get('comentario') or '').strip()
+    if e.status != 'realizada':
+        e.status = 'realizada'
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Avaliação salva!', 'nota': nota})
+
 @app.route('/api/conversas/<int:cid>/mensagens', methods=['GET', 'POST'])
 def api_mensagens(cid):
     u = usuario_atual()
@@ -1567,11 +1835,11 @@ with app.app_context():
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v7.0')
-    print('  💬 Chat em tempo real + Pipeline + Ranking')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v8.0')
+    print('  🎥 Central de Entrevistas + Chat + Pipeline')
     print('=' * 56)
-    print('  🔗 Menu:      http://localhost:5000')
-    print('  💬 Mensagens: http://localhost:5000/mensagens')
+    print('  🔗 Menu:          http://localhost:5000')
+    print('  🎥 Entrevistas:   http://localhost:5000/entrevistas')
     print('=' * 56)
     print('  Pressione CTRL+C para parar')
     print()
