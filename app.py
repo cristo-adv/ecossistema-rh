@@ -637,12 +637,56 @@ def editar_candidato(uid):
 @app.route('/gerenciar')
 @admin_required
 def gerenciar():
+    h = '<h1>⚙️ Gerenciamento <span>// Grupos e Usuários</span></h1>'
+    h += '<p class="sub">Configure as permissões por grupo (ON/OFF) e atribua cada usuário a um grupo.</p>'
+    h += '<div class="painel"><h4>👥 GRUPOS — permissões ON/OFF</h4>'
+    for g in GRUPOS:
+        perms = {p.modulo: p.habilitado for p in GrupoPermissao.query.filter_by(grupo=g).all()}
+        h += '<div style="border:1px solid rgba(28,47,74,.6);border-radius:12px;padding:14px;margin-bottom:12px">'
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        h += '<b>' + GRUPO_LABEL.get(g, g) + '</b>'
+        h += '<button class="btn verde" onclick="salvarGrupo(\'' + g + '\')">💾 Salvar ' + g + '</button></div>'
+        h += '<div class="status" id="mods_g_' + g + '">'
+        for mod in MODULOS_GERENCIAVEIS:
+            checked = ' checked' if perms.get(mod, mod in PERMISSOES_PADRAO.get(g, [])) else ''
+            h += ('<label style="font-size:12px;display:flex;align-items:center;gap:4px;background:rgba(15,33,64,.5);'
+                  'padding:4px 8px;border-radius:6px"><input type="checkbox" data-mod="' + mod + '"' + checked + ' style="width:auto"> '
+                  + mod.replace('_', ' ').title() + '</label>')
+        h += '</div><div class="mensagem" id="msg_g_' + g + '"></div></div>'
+    h += '</div>'
     usuarios = Usuario.query.filter(Usuario.tipo != 'admin').order_by(Usuario.tipo, Usuario.nome).all()
-    h = '<h1>⚙️ Gerenciamento <span>// Permissões dos usuários</span></h1>'
-    h += '<p class="sub">Habilite o que cada usuário pode ver e alterar. O administrador tem acesso total.</p>'
+    h += '<div class="painel"><h4>🙋 USUÁRIOS — grupo e status</h4>'
     if not usuarios:
-        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum usuário além do admin cadastrado.</p></div>'
-        return pagina(h, '/gerenciar')
+        h += '<p style="color:#8fa3c0">Nenhum usuário cadastrado ainda.</p>'
+    else:
+        h += '<table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Grupo</th><th>Ativo</th><th>Salvar</th></tr></thead><tbody>'
+        for alvo in usuarios:
+            h += ('<tr><td><b>' + alvo.nome + '</b><br><span style="color:#8fa3c0;font-size:11px">' + alvo.email + '</span></td>'
+                  '<td><select id="grupo_' + str(alvo.id) + '">')
+            for g in GRUPOS:
+                sel = ' selected' if grupo_do_usuario(alvo) == g else ''
+                h += '<option value="' + g + '"' + sel + '>' + GRUPO_LABEL.get(g, g) + '</option>'
+            h += '</select></td>'
+            h += '<td><input type="checkbox" id="ativo_' + str(alvo.id) + '" ' + ('checked' if alvo.ativo else '') + ' style="width:auto"></td>'
+            h += '<td><button class="btn cinza" onclick="salvarUsuario(' + str(alvo.id) + ')">💾</button></td></tr>'
+        h += '</tbody></table>'
+    h += '</div>'
+    h += ('<script>'
+          'function salvarGrupo(g){var mods={};'
+          'document.querySelectorAll("#mods_g_"+g+" input[data-mod]").forEach(function(cb){mods[cb.getAttribute("data-mod")]=cb.checked;});'
+          'fetch("/api/admin/grupos/permissoes",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({grupo:g,permissoes:mods})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg_g_"+g);if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Permissões do grupo salvas!";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});}'
+          'function salvarUsuario(uid){'
+          'fetch("/api/admin/usuario/grupo",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({usuario_id:uid,grupo:document.getElementById("grupo_"+uid).value,'
+          'ativo:document.getElementById("ativo_"+uid).checked})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){if(res.ok){alert("✅ Usuário atualizado!");}else{alert("❌ "+(res.j.erro||"Erro"));}});}</script>')
+    return pagina(h, '/gerenciar')
     for alvo in usuarios:
         perms = {p.modulo: p.habilitado for p in Permissao.query.filter_by(usuario_id=alvo.id).all()}
         h += '<div class="painel">'
