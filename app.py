@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v3.0 — turbo: login, paineis, candidaturas reais."""
+"""Ecossistema de RH Inovador v4.0 — importacao de plano, match inteligente, busca."""
 
 import os
+import re
 import random
 from datetime import datetime
 from functools import wraps
@@ -37,6 +38,13 @@ class Usuario(db.Model):
     senha_hash = db.Column(db.String(200), nullable=False)
     tipo = db.Column(db.String(20), nullable=False)
     ativo = db.Column(db.Boolean, default=True)
+
+class Perfil(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuario.id'), unique=True)
+    skills = db.Column(db.Text)
+    resumo = db.Column(db.Text)
+    linkedin = db.Column(db.String(200))
 
 class Empresa(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -78,6 +86,11 @@ class Vaga(db.Model):
     localizacao = db.Column(db.String(120))
     criada_em = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Requisito(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    skill = db.Column(db.String(100))
+
 class Candidatura(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
@@ -85,6 +98,27 @@ class Candidatura(db.Model):
     match_score = db.Column(db.Float, default=0.0)
     status = db.Column(db.String(20), default='pendente')
     criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+# ================= HELPERS =================
+def parse_float(s):
+    if not s:
+        return None
+    s = str(s).strip().replace('R$', '').replace(' ', '')
+    if not s:
+        return None
+    if ',' in s and '.' in s:
+        s = s.replace('.', '').replace(',', '.')
+    elif ',' in s:
+        s = s.replace(',', '.')
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def texto_int(valor):
+    if valor is None:
+        return '-'
+    return 'R$ ' + format(int(valor), ',d').replace(',', '.')
 
 # ================= SEED =================
 def criar_dados_iniciais():
@@ -94,9 +128,13 @@ def criar_dados_iniciais():
                     senha_hash=generate_password_hash('admin123'), tipo='admin', ativo=True)
     cand = Usuario(nome='Maria Silva', email='candidato@teste.com',
                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', ativo=True)
+    cand2 = Usuario(nome='João Pereira', email='joao@teste.com',
+                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', ativo=True)
+    cand3 = Usuario(nome='Ana Souza', email='ana@teste.com',
+                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', ativo=True)
     emp = Usuario(nome='RH Inovador S.A.', email='empresa@teste.com',
                   senha_hash=generate_password_hash('empresa123'), tipo='empresa', ativo=True)
-    db.session.add_all([admin, cand, emp])
+    db.session.add_all([admin, cand, cand2, cand3, emp])
     db.session.flush()
     db.session.add(Empresa(usuario_id=emp.id, razao_social='RH Inovador S.A.',
                            nome_fantasia='RH Inovador', cnpj='00.000.000/0001-00',
@@ -147,6 +185,32 @@ def criar_dados_iniciais():
     ])
     db.session.commit()
 
+def garantir_dados_demo():
+    """Cria perfis, skills e requisitos de exemplo (idempotente — nao apaga nada)."""
+    skills_demo = {
+        'candidato@teste.com': 'python, flask, sql, api rest, comunicação',
+        'joao@teste.com': 'javascript, react, node, ui, comunicação',
+        'ana@teste.com': 'marketing, vendas, excel, comunicação, negociação',
+    }
+    for email, sk in skills_demo.items():
+        u = Usuario.query.filter_by(email=email).first()
+        if u and not Perfil.query.filter_by(usuario_id=u.id).first():
+            db.session.add(Perfil(usuario_id=u.id, skills=sk,
+                                  resumo='Profissional em busca de novos desafios.'))
+    reqs_demo = {
+        'Desenvolvedor(a) Python Pleno': ['python', 'flask', 'sql', 'api rest'],
+        'Analista de Gente e Gestão': ['rh', 'carreiras', 'excel', 'comunicação'],
+        'Engenheiro(a) de IA Sênior': ['python', 'machine learning', 'llm', 'dados'],
+        'Executivo(a) de Contas': ['vendas', 'negociação', 'excel', 'comunicação'],
+        'Estagiário(a) de RH': ['organização', 'comunicação', 'excel', 'proatividade'],
+    }
+    for titulo, reqs in reqs_demo.items():
+        v = Vaga.query.filter_by(titulo=titulo).first()
+        if v and not Requisito.query.filter_by(vaga_id=v.id).first():
+            for r in reqs:
+                db.session.add(Requisito(vaga_id=v.id, skill=r))
+    db.session.commit()
+
 # ================= WEBSOCKET =================
 @socketio.on('connect')
 def on_connect():
@@ -192,8 +256,11 @@ def pagina(conteudo, ativo=''):
         ('/analytics', '📈', 'Analytics'),
         ('/experiencia', '🎯', 'Experiência'),
         ('/inovacao', '🚀', 'Inovação'),
-        ('/painel', '🔑', 'Meu Painel'),
     ]
+    if u:
+        nav.append(('/perfil', '👤', 'Meu Perfil'))
+        nav.append(('/importar-plano', '📥', 'Importar Plano'))
+        nav.append(('/painel', '🔑', 'Meu Painel'))
     itens = ''
     for href, icone, nome in nav:
         cls = ' class="ativo"' if href == ativo else ''
@@ -201,7 +268,7 @@ def pagina(conteudo, ativo=''):
     if u:
         chip = ('<div class="chip"><span class="pill ' + u.tipo + '">' + u.tipo + '</span> '
                 '<b>' + u.nome + '</b> '
-                '<a class="link" href="/painel">Meu Painel</a> | '
+                '<a class="link" href="/perfil">Perfil</a> | '
                 '<a class="link" href="/logout">Sair</a></div>')
     else:
         chip = ('<div class="chip"><a class="btn" href="/login">🔑 Entrar</a> '
@@ -222,6 +289,7 @@ header h1{font-size:22px}header h1 span{color:#3b82f6}
 .chip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
 .btn{background:#1d4ed8;color:#fff;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;border:none;cursor:pointer}
 .btn.cinza{background:#1e293b}.btn:hover{opacity:.9}
+.btn.verde{background:#10b981}
 .grade{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:24px}
 .card{background:linear-gradient(145deg,#0f2140,#0d1b30);border:1px solid #1c2f4a;border-radius:14px;padding:20px;transition:.25s}
 .card:hover{border-color:#3b82f6;transform:translateY(-3px)}
@@ -252,13 +320,15 @@ form input:focus,form select:focus,form textarea:focus{outline:none;border-color
 .mensagem.erro{display:block;background:#ef444422;color:#ef4444}
 .link{color:#3b82f6;text-decoration:none}
 .sub{color:#8fa3c0;font-size:13px;margin-bottom:18px}
+.caixa-busca{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.caixa-busca input,.caixa-busca select{width:auto;min-width:160px}
 footer{margin-top:24px;color:#475569;font-size:12px}
 @media(max-width:800px){body{flex-direction:column}aside{width:100%;border-right:none;border-bottom:1px solid #1c2f4a}main{padding:18px}}
 </style></head><body>
 <aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v3.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v4.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -270,48 +340,20 @@ ws.onclose=function(){setTimeout(conectarWs,3000);};}conectarWs();
                 .replace('@CONTEUDO@', conteudo)
                 .replace('@MAX@', str(MAX_CONEXOES)))
 
-def pagina_form(titulo, campos, acao, botao='Salvar'):
-    h = '<h1>' + titulo + '</h1><div class="painel" style="max-width:560px"><form id="f">'
-    for nome, label, tipo in campos:
-        h += '<label>' + label + '</label>'
-        if tipo == 'select' and nome == 'tipo':
-            h += ('<select id="tipo"><option value="candidato">Candidato(a) — procuro emprego</option>'
-                  '<option value="empresa">Empresa — quero contratar</option></select>')
-        elif tipo == 'select':
-            h += '<select id="' + nome + '"><option value="">Selecione...</option>'
-            if nome == 'nivel_codigo':
-                for n in Nivel.query.order_by(Nivel.ordem).all():
-                    h += '<option value="' + n.codigo + '">' + n.nome + ' (' + n.codigo + ')</option>'
-            elif nome == 'empresa':
-                for e in Empresa.query.all():
-                    h += '<option value="' + e.razao_social + '">' + e.razao_social + '</option>'
-            h += '</select>'
-        else:
-            h += '<input id="' + nome + '" type="' + tipo + '" placeholder="' + label + '" required>'
-    h += '<div style="margin-top:16px"><button class="btn" type="submit">' + botao + '</button></div>'
-    h += '<div class="mensagem" id="msg"></div></form></div>'
-    h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();var d={};'
-          '["' + '","'.join(c[0] for c in campos) + '"].forEach(function(k){var el=document.getElementById(k);if(el)d[k]=el.value;});'
-          'fetch("' + acao + '",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})'
-          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
-          '.then(function(res){var m=document.getElementById("msg");'
-          'if(res.ok){m.className="mensagem ok";m.innerHTML="✅ "+(res.j.msg||"Salvo com sucesso!")+" <a class=link href=/painel>Ir para Meu Painel</a>";}'
-          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
-    return pagina(h, '/painel' if 'painel' in acao else '')
-
 # ================= AUTH (PAGINAS) =================
 @app.route('/registro')
 def registro():
-    h = '<h1>Criar Conta <span>// Comece agora</span></h1><div class="painel" style="max-width:560px"><form id="f" method="post" action="/registro">'
-    h += '<label>Nome completo</label><input name="nome" required placeholder="Seu nome">'
-    h += '<label>E-mail</label><input name="email" type="email" required placeholder="voce@email.com">'
-    h += '<label>Senha</label><input name="senha" type="password" required placeholder="Mínimo 6 caracteres">'
-    h += '<label>Tipo de conta</label><select name="tipo"><option value="candidato">Candidato(a) — procuro emprego</option><option value="empresa">Empresa — quero contratar</option></select>'
+    h = '<h1>Criar Conta <span>// Comece agora</span></h1><div class="painel" style="max-width:560px"><form id="f">'
+    h += '<label>Nome completo</label><input id="nome" required placeholder="Seu nome">'
+    h += '<label>E-mail</label><input id="email" type="email" required placeholder="voce@email.com">'
+    h += '<label>Senha</label><input id="senha" type="password" required placeholder="Mínimo 6 caracteres">'
+    h += '<label>Tipo de conta</label><select id="tipo"><option value="candidato">Candidato(a) — procuro emprego</option><option value="empresa">Empresa — quero contratar</option></select>'
     h += '<div style="margin-top:16px"><button class="btn" type="submit">Criar conta</button></div>'
     h += '<div class="mensagem" id="msg"></div></form></div>'
-    h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();var f=this;'
+    h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();'
           'fetch("/api/registro",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({nome:f.nome.value,email:f.email.value,senha:f.senha.value,tipo:f.tipo.value})})'
+          'body:JSON.stringify({nome:document.getElementById("nome").value,email:document.getElementById("email").value,'
+          'senha:document.getElementById("senha").value,tipo:document.getElementById("tipo").value})})'
           '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
           '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
           'm.innerHTML="✅ Conta criada! Redirecionando...";setTimeout(function(){location.href="/painel";},800);}'
@@ -341,6 +383,59 @@ def logout():
     session.clear()
     return redirect(url_for('menu'))
 
+# ================= MEU PERFIL =================
+@app.route('/perfil')
+@login_required
+def perfil():
+    u = usuario_atual()
+    p = Perfil.query.filter_by(usuario_id=u.id).first()
+    sk = p.skills if p else ''
+    resumo = p.resumo if p else ''
+    link = p.linkedin if p else ''
+    h = '<h1>Meu Perfil <span>// ' + u.nome + '</span></h1><p class="sub">Cadastre suas skills para o Match Score ficar mais preciso.</p>'
+    h += '<div class="painel" style="max-width:560px"><form id="f">'
+    h += '<label>Skills (separadas por vírgula)</label><textarea id="skills" rows="3" placeholder="ex: python, flask, sql, comunicação">' + sk + '</textarea>'
+    h += '<label>Resumo profissional</label><textarea id="resumo" rows="3" placeholder="Conte um pouco sobre você">' + resumo + '</textarea>'
+    h += '<label>LinkedIn (opcional)</label><input id="linkedin" value="' + link + '" placeholder="https://linkedin.com/in/...">'
+    h += '<div style="margin-top:16px"><button class="btn" type="submit">Salvar perfil</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/perfil",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({skills:document.getElementById("skills").value,resumo:document.getElementById("resumo").value,'
+          'linkedin:document.getElementById("linkedin").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Perfil salvo!";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
+    return pagina(h, '/perfil')
+
+# ================= IMPORTAR PLANO =================
+@app.route('/importar-plano')
+@login_required
+def importar_plano():
+    h = '<h1>Importar Plano de Carreiras <span>// PCS</span></h1>'
+    h += '<p class="sub">Cole a tabela do seu plano (Word/PDF). Cada linha = um nível. Formato: Trilha; Código; Nível; Sal. Mín; Sal. Máx; Autonomia; Impacto</p>'
+    h += '<div class="painel" style="max-width:760px">'
+    h += '<button class="btn cinza" type="button" onclick="preencherExemplo()" style="margin-bottom:10px">📋 Ver exemplo pronto</button>'
+    h += '<label>Cole aqui as linhas do plano (uma por linha):</label>'
+    h += '<textarea id="texto" rows="12" style="font-family:monospace" placeholder="Carreira Técnica; JR1; Júnior I; 2500; 4000; Assistida; Individual&#10;Carreira Técnica; JR2; Júnior II; 3500; 5500; Guiada; Individual"></textarea>'
+    h += '<div style="margin-top:14px"><button class="btn verde" type="button" onclick="importar()">📥 Importar agora</button></div>'
+    h += '<div class="mensagem" id="msg"></div></div>'
+    h += ('<script>'
+          'function preencherExemplo(){document.getElementById("texto").value='
+          '"Carreira Técnica; JR1; Júnior I; 2500; 4000; Assistida; Individual\\n"'
+          '+"Carreira Técnica; JR2; Júnior II; 3500; 5500; Guiada; Individual\\n"'
+          '+"Carreira Técnica; PL1; Pleno I; 6000; 9000; Independente; Time\\n"'
+          '+"Carreira de Gestão; GPL; Gestão Pleno; 8000; 14000; Independente; Área\\n"'
+          '+"Carreira Comercial; CPL; Comercial Pleno; 4500; 8000; Independente; Time";}'
+          'function importar(){var t=document.getElementById("texto").value;if(!t.trim()){return;}'
+          'fetch("/api/importar-plano",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({texto:t})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){'
+          'm.className="mensagem ok";m.innerHTML="✅ "+res.j.msg+" <a class=link href=/pcs>Ver PCS atualizado →</a>";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
+    return pagina(h, '/importar-plano')
+
 # ================= MEU PAINEL =================
 @app.route('/painel')
 @login_required
@@ -348,6 +443,12 @@ def painel():
     u = usuario_atual()
     h = '<h1>Meu Painel <span>// ' + u.nome + '</span></h1><p class="sub">Acompanhe suas atividades no ecossistema.</p>'
     if u.tipo == 'candidato':
+        p = Perfil.query.filter_by(usuario_id=u.id).first()
+        if p and p.skills:
+            h += '<div class="painel"><h4>Minhas Skills</h4><div class="status">'
+            for sk in [s.strip() for s in p.skills.split(',') if s.strip()]:
+                h += '<span class="pill candidato">' + sk + '</span>'
+            h += ' <a class="link" href="/perfil">editar →</a></div></div>'
         cands = Candidatura.query.filter_by(candidato_id=u.id).order_by(Candidatura.id.desc()).all()
         h += '<div class="painel"><h4>Minhas Candidaturas</h4>'
         if cands:
@@ -389,6 +490,9 @@ def painel():
         else:
             h += '<p style="color:#8fa3c0">Nenhuma vaga publicada. <a class="link" href="/cadastrar-vaga">Publicar vaga →</a></p>'
         h += '</div>'
+        h += '<div class="painel"><h4>Gestão</h4><div class="status">'
+        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> <a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
+        h += '</div></div>'
     else:
         h += '<div class="painel"><h4>Visão Geral (Administrador)</h4><div class="status">'
         h += '<div class="item"><span class="dot"></span> Candidatos: <b>' + str(Usuario.query.filter_by(tipo='candidato').count()) + '</b></div>'
@@ -397,7 +501,10 @@ def painel():
         h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
         h += '</div></div>'
         h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
-        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> <a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> <a class="btn cinza" href="/analytics">📈 Analytics</a>'
+        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
+        h += '<a class="btn verde" href="/importar-plano">📥 Importar Plano PCS</a> '
+        h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
+        h += '<a class="btn cinza" href="/analytics">📈 Analytics</a>'
         h += '</div></div>'
     return pagina(h, '/painel')
 
@@ -406,11 +513,11 @@ def painel():
 def menu():
     cards = [
         ('🧠', 'Recrutamento Inteligente', 'IA generativa, matching preditivo e triagem NLP', '#3b82f6', '/recrutamento'),
-        ('👤', 'Candidatos', 'Perfil blockchain, gamificação e match score', '#10b981', '/candidatos'),
+        ('👤', 'Candidatos', 'Perfil com skills, match score e candidaturas', '#10b981', '/candidatos'),
         ('🏢', 'Empresas', 'ATS inteligente, employer branding e talent pool', '#f59e0b', '/empresas'),
         ('📊', 'Plano de Cargos e Salários', 'Níveis Júnior a Fellow, faixas e promoções', '#a855f7', '/pcs'),
         ('📡', 'Conectividade', 'Vídeo, WhatsApp, e-mail e chat em tempo real', '#22d3ee', '/conectividade'),
-        ('💼', 'Vagas', 'Oportunidades abertas e candidaturas', '#ef4444', '/vagas'),
+        ('💼', 'Vagas', 'Oportunidades abertas com busca e match', '#ef4444', '/vagas'),
         ('📈', 'Analytics', 'People analytics, KPIs e dashboards', '#f97316', '/analytics'),
         ('🎯', 'Experiência', 'Onboarding, mentoria, feedback e comunidade', '#14b8a6', '/experiencia'),
         ('🚀', 'Inovação', 'Web3, Skills DNA, VR e recrutamento assíncrono', '#8b5cf6', '/inovacao'),
@@ -436,16 +543,20 @@ def menu():
 @app.route('/pcs')
 def pcs():
     trilhas = Trilha.query.all()
-    niveis = Nivel.query.order_by(Nivel.trilha_id, Nivel.ordem).all()
+    niveis = Nivel.query.all()
     h = '<h1>Plano de Cargos e Salários <span>// PCS</span></h1>'
-    h += '<p class="sub">' + str(len(trilhas)) + ' trilhas • ' + str(len(niveis)) + ' níveis • faixas salariais dinâmicas</p>'
+    h += '<p class="sub">' + str(len(trilhas)) + ' trilhas • ' + str(len(niveis)) + ' níveis • faixas salariais dinâmicas'
+    u = usuario_atual()
+    if u:
+        h += ' • <a class="link" href="/importar-plano">📥 Importar/Atualizar plano</a>'
+    h += '</p>'
     for t in trilhas:
         qtd = Nivel.query.filter_by(trilha_id=t.id).count()
         h += '<div class="painel"><h4>🧭 ' + t.nome + ' • ' + str(qtd) + ' níveis</h4><p style="color:#8fa3c0;font-size:13px;margin-bottom:12px">' + (t.descricao or '') + '</p>'
         h += '<table class="tabela"><thead><tr><th>Código</th><th>Nível</th><th>Autonomia</th><th>Impacto</th><th>Faixa Salarial</th></tr></thead><tbody>'
         for n in Nivel.query.filter_by(trilha_id=t.id).order_by(Nivel.ordem).all():
             h += ('<tr><td><b>' + n.codigo + '</b></td><td>' + n.nome + '</td><td>' + (n.autonomia or '-') + '</td>'
-                  '<td>' + (n.impacto or '-') + '</td><td><b style="color:#22d3ee">R$ ' + format(int(n.salario_min or 0), ',d').replace(',', '.') + ' – R$ ' + format(int(n.salario_max or 0), ',d').replace(',', '.') + '</b></td></tr>')
+                  '<td>' + (n.impacto or '-') + '</td><td><b style="color:#22d3ee">' + texto_int(n.salario_min) + ' – ' + texto_int(n.salario_max) + '</b></td></tr>')
         h += '</tbody></table></div>'
     return pagina(h, '/pcs')
 
@@ -460,15 +571,53 @@ def trilhas():
 
 @app.route('/vagas')
 def vagas():
-    lista = Vaga.query.filter_by(status='aberta').order_by(Vaga.id.desc()).all()
+    q = (request.args.get('q') or '').strip().lower()
+    nivel = (request.args.get('nivel') or '').strip()
+    regime = (request.args.get('regime') or '').strip()
+    query = Vaga.query.filter_by(status='aberta')
+    if q:
+        query = query.filter((Vaga.titulo.ilike('%' + q + '%')) | (Vaga.empresa.ilike('%' + q + '%')) | (Vaga.descricao.ilike('%' + q + '%')))
+    if nivel:
+        query = query.filter_by(nivel_codigo=nivel)
+    if regime:
+        query = query.filter_by(regime=regime)
+    lista = query.order_by(Vaga.id.desc()).all()
     h = '<h1>Vagas <span>// Oportunidades</span></h1>'
-    h += '<p class="sub">' + str(len(lista)) + ' vagas abertas no ecossistema</p>'
+    h += '<p class="sub">' + str(len(lista)) + ' vagas abertas' + (' • filtro: ' + q if q else '') + '</p>'
+    h += '<div class="caixa-busca">'
+    h += '<input id="q" placeholder="🔍 Buscar por título, empresa..." value="' + q + '" onkeydown="if(event.key===\'Enter\')aplicar()">'
+    h += '<select id="nivel" onchange="aplicar()"><option value="">Todos os níveis</option>'
+    for cod in sorted(set(n.codigo for n in Nivel.query.all())):
+        sel = ' selected' if cod == nivel else ''
+        h += '<option value="' + cod + '"' + sel + '>' + cod + '</option>'
+    h += '</select>'
+    h += '<select id="regime" onchange="aplicar()"><option value="">Todos os regimes</option>'
+    for r in ['Remoto', 'Híbrido', 'Presencial']:
+        sel = ' selected' if r == regime else ''
+        h += '<option value="' + r + '"' + sel + '>' + r + '</option>'
+    h += '</select>'
+    h += '<button class="btn cinza" onclick="aplicar()">Filtrar</button>'
+    h += '<a class="btn" href="/vagas">Limpar</a>'
+    h += '</div>'
+    h += ('<script>function aplicar(){var p=new URLSearchParams();'
+          'var qv=document.getElementById("q").value;if(qv)p.set("q",qv);'
+          'var nv=document.getElementById("nivel").value;if(nv)p.set("nivel",nv);'
+          'var rv=document.getElementById("regime").value;if(rv)p.set("regime",rv);'
+          'location.href="/vagas"+(p.toString()?"?"+p.toString():"");}</script>')
     h += '<div class="painel"><p><a class="btn cinza" href="/cadastrar-vaga">➕ Nova Vaga</a></p></div>'
+    if not lista:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma vaga encontrada com esses filtros.</p></div>'
     for v in lista:
+        reqs = [r.skill for r in Requisito.query.filter_by(vaga_id=v.id).all()]
+        req_html = ''
+        if reqs:
+            req_html = '<p style="color:#8fa3c0;font-size:12px;margin-top:6px">🎯 Requisitos: '
+            req_html += ', '.join('<b>' + r + '</b>' for r in reqs) + '</p>'
         h += ('<div class="painel"><div class="status" style="justify-content:space-between;flex-wrap:wrap">'
               '<div><h3>💼 ' + v.titulo + '</h3>'
               '<p style="color:#8fa3c0;font-size:13px;margin-top:6px">' + (v.descricao or '') + '</p>'
-              '<p style="color:#8fa3c0;font-size:12px;margin-top:6px">🏢 ' + (v.empresa or '-') + ' • Nível <b>' + (v.nivel_codigo or '-') + '</b> • ' + (v.regime or '-') + ' • ' + (v.localizacao or '-') + '</p></div>'
+              '<p style="color:#8fa3c0;font-size:12px;margin-top:6px">🏢 ' + (v.empresa or '-') + ' • Nível <b>' + (v.nivel_codigo or '-') + '</b> • ' + (v.regime or '-') + ' • ' + (v.localizacao or '-') + '</p>'
+              + req_html + '</div>'
               '<div style="text-align:right"><span class="pill ' + v.status + '">' + v.status + '</span><br><br>'
               '<a class="btn" href="/vagas/' + str(v.id) + '/candidatar">📩 Candidatar-se</a></div></div></div>')
     return pagina(h, '/vagas')
@@ -481,16 +630,23 @@ def form_candidatura(vid):
     u = usuario_atual()
     nome = u.nome if u else ''
     email = u.email if u else ''
+    reqs = [r.skill for r in Requisito.query.filter_by(vaga_id=v.id).all()]
+    req_html = ''
+    if reqs:
+        req_html = '<p class="sub">🎯 Requisitos: ' + ', '.join(reqs) + '</p>'
     h = '<h1>Candidatar-se <span>// ' + v.titulo + '</span></h1>'
     h += '<p class="sub">🏢 ' + (v.empresa or '-') + ' • Nível ' + (v.nivel_codigo or '-') + ' • ' + (v.regime or '-') + '</p>'
+    h += req_html
     h += '<div class="painel" style="max-width:560px"><form id="f">'
     h += '<label>Seu nome</label><input id="nome" required value="' + nome + '" placeholder="Seu nome completo">'
     h += '<label>Seu e-mail</label><input id="email" type="email" required value="' + email + '" placeholder="voce@email.com">'
+    h += '<label>Suas skills (separadas por vírgula)</label><input id="skills" placeholder="ex: python, sql, comunicação">'
     h += '<div style="margin-top:16px"><button class="btn" type="submit">Enviar candidatura</button></div>'
     h += '<div class="mensagem" id="msg"></div></form></div>'
     h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();'
           'fetch("/api/vagas/' + str(vid) + '/candidatar",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({nome:document.getElementById("nome").value,email:document.getElementById("email").value})})'
+          'body:JSON.stringify({nome:document.getElementById("nome").value,email:document.getElementById("email").value,'
+          'skills:document.getElementById("skills").value})})'
           '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
           '.then(function(res){var m=document.getElementById("msg");if(res.ok){'
           'm.className="mensagem ok";m.innerHTML="✅ Candidatura enviada! Match Score: <b>"+res.j.match_score+"%</b>";}'
@@ -512,6 +668,7 @@ def pagina_cadastrar_vaga():
         h += '<option value="' + n.codigo + '">' + n.nome + ' (' + n.codigo + ')</option>'
     h += '</select>'
     h += '<label>Descrição</label><textarea id="descricao" rows="3" placeholder="Atividades, requisitos..."></textarea>'
+    h += '<label>Requisitos / skills necessárias (separadas por vírgula)</label><input id="requisitos" placeholder="ex: python, flask, sql">'
     h += '<label>Regime</label><select id="regime"><option value="Remoto">Remoto</option><option value="Híbrido">Híbrido</option><option value="Presencial">Presencial</option></select>'
     h += '<label>Localização</label><input id="localizacao" placeholder="ex: Curitiba/PR">'
     h += '<label>Salário mínimo</label><input id="salario_min" type="number" placeholder="ex: 8000">'
@@ -521,7 +678,8 @@ def pagina_cadastrar_vaga():
     h += ('<script>document.getElementById("f").onsubmit=function(e){e.preventDefault();'
           'var d={titulo:document.getElementById("titulo").value,empresa:document.getElementById("empresa").value,'
           'nivel_codigo:document.getElementById("nivel_codigo").value,descricao:document.getElementById("descricao").value,'
-          'regime:document.getElementById("regime").value,localizacao:document.getElementById("localizacao").value,'
+          'requisitos:document.getElementById("requisitos").value,regime:document.getElementById("regime").value,'
+          'localizacao:document.getElementById("localizacao").value,'
           'salario_min:document.getElementById("salario_min").value,salario_max:document.getElementById("salario_max").value};'
           'fetch("/api/vagas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})'
           '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
@@ -582,10 +740,13 @@ def candidatos():
     lista = Usuario.query.filter_by(tipo='candidato').all()
     h = '<h1>Candidatos <span>// Talentos</span></h1>'
     h += '<p class="sub">' + str(len(lista)) + ' profissionais no ecossistema</p>'
-    h += '<div class="painel"><table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Candidaturas</th><th>Status</th></tr></thead><tbody>'
+    h += '<div class="painel"><table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Skills</th><th>Candidaturas</th><th>Status</th></tr></thead><tbody>'
     for u in lista:
+        p = Perfil.query.filter_by(usuario_id=u.id).first()
         total = Candidatura.query.filter_by(candidato_id=u.id).count()
-        h += ('<tr><td><b>' + u.nome + '</b></td><td>' + u.email + '</td><td>' + str(total) + '</td>'
+        skills = (p.skills[:60] + '...') if p and p.skills and len(p.skills) > 60 else (p.skills if p else '-')
+        h += ('<tr><td><b>' + u.nome + '</b></td><td>' + u.email + '</td><td>' + (skills or '-') + '</td>'
+              '<td>' + str(total) + '</td>'
               '<td><span class="pill candidato">Ativo</span></td></tr>')
     h += '</tbody></table></div>'
     return pagina(h, '/candidatos')
@@ -706,11 +867,27 @@ def inovacao():
     h += '<div class="grade">' + grade + '</div>'
     return pagina(h, '/inovacao')
 
+# ================= MATCH SCORE INTELIGENTE =================
+def calcular_match(vaga, candidato):
+    reqs = [r.skill.lower().strip() for r in Requisito.query.filter_by(vaga_id=vaga.id).all()]
+    perfil = Perfil.query.filter_by(usuario_id=candidato.id).first()
+    skills = [s.lower().strip() for s in (perfil.skills or '').split(',') if s.strip()] if perfil else []
+    if reqs and skills:
+        hits = 0
+        for r in reqs:
+            for sk in skills:
+                if r in sk or sk in r:
+                    hits += 1
+                    break
+        base = int(50 + (hits / len(reqs)) * 40)
+        return min(98, base + random.randint(0, 5))
+    return random.randint(62, 97)
+
 # ================= API JSON =================
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '3.0.0',
+        'status': 'online', 'versao': '4.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
                     'recrutamento', 'analytics', 'experiencia', 'inovacao'],
@@ -734,7 +911,8 @@ def api_niveis():
 def api_vagas():
     return jsonify([{'id': v.id, 'titulo': v.titulo, 'empresa': v.empresa,
                      'nivel_codigo': v.nivel_codigo, 'status': v.status,
-                     'regime': v.regime, 'localizacao': v.localizacao}
+                     'regime': v.regime, 'localizacao': v.localizacao,
+                     'requisitos': [r.skill for r in Requisito.query.filter_by(vaga_id=v.id).all()]}
                     for v in Vaga.query.all()])
 
 @app.route('/api/registro', methods=['POST'])
@@ -770,6 +948,79 @@ def api_login():
     return jsonify({'ok': True, 'msg': 'Bem-vindo(a)!',
                     'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo}})
 
+@app.route('/api/perfil', methods=['POST'])
+def api_perfil():
+    u = usuario_atual()
+    if not u:
+        return jsonify({'erro': 'Faça login'}), 401
+    d = request.get_json(force=True)
+    p = Perfil.query.filter_by(usuario_id=u.id).first()
+    if not p:
+        p = Perfil(usuario_id=u.id)
+        db.session.add(p)
+    p.skills = (d.get('skills') or '').strip()
+    p.resumo = (d.get('resumo') or '').strip()
+    p.linkedin = (d.get('linkedin') or '').strip()
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Perfil salvo'})
+
+@app.route('/api/importar-plano', methods=['POST'])
+def api_importar_plano():
+    d = request.get_json(force=True)
+    texto = (d.get('texto') or '').strip()
+    if not texto:
+        return jsonify({'erro': 'Cole o conteúdo do plano primeiro'}), 400
+    importados = 0
+    trilhas_criadas = 0
+    atualizados = 0
+    erros = []
+    for raw in texto.splitlines():
+        linha = raw.strip()
+        if not linha:
+            continue
+        normalizada = linha.replace('\t', ';').replace('|', ';')
+        if normalizada.lower().startswith('trilha'):
+            continue
+        partes = [p.strip() for p in normalizada.split(';')]
+        partes = [p for p in partes if p]
+        if len(partes) < 3:
+            erros.append('Linha ignorada (faltam colunas): ' + linha[:60])
+            continue
+        trilha_nome = partes[0]
+        codigo = partes[1].upper()
+        nome_nivel = partes[2]
+        smin = parse_float(partes[3]) if len(partes) > 3 else None
+        smax = parse_float(partes[4]) if len(partes) > 4 else None
+        autonomia = partes[5] if len(partes) > 5 else None
+        impacto = partes[6] if len(partes) > 6 else None
+        t = Trilha.query.filter(Trilha.nome.ilike(trilha_nome)).first()
+        if not t:
+            t = Trilha(nome=trilha_nome, descricao='Importada do plano')
+            db.session.add(t)
+            db.session.flush()
+            trilhas_criadas += 1
+        n = Nivel.query.filter_by(trilha_id=t.id, codigo=codigo).first()
+        if n:
+            n.nome = nome_nivel
+            n.salario_min = smin if smin is not None else n.salario_min
+            n.salario_max = smax if smax is not None else n.salario_max
+            n.autonomia = autonomia or n.autonomia
+            n.impacto = impacto or n.impacto
+            atualizados += 1
+        else:
+            max_ordem = db.session.query(db.func.max(Nivel.ordem)).filter_by(trilha_id=t.id).scalar() or 0
+            db.session.add(Nivel(trilha_id=t.id, codigo=codigo, nome=nome_nivel,
+                                 ordem=max_ordem + 1, salario_min=smin, salario_max=smax,
+                                 autonomia=autonomia, impacto=impacto))
+            importados += 1
+    db.session.commit()
+    msg = 'Importação concluída! Novos níveis: ' + str(importados) + ' • Atualizados: ' + str(atualizados) + ' • Trilhas criadas: ' + str(trilhas_criadas)
+    if erros:
+        msg += ' • Avisos: ' + str(len(erros))
+    return jsonify({'ok': True, 'msg': msg, 'importados': importados,
+                    'atualizados': atualizados, 'trilhas_criadas': trilhas_criadas,
+                    'erros': erros[:5]})
+
 @app.route('/api/vagas/cadastrar', methods=['POST'])
 def api_cadastrar_vaga():
     d = request.get_json(force=True)
@@ -779,10 +1030,15 @@ def api_cadastrar_vaga():
     if not titulo or not empresa or not nivel:
         return jsonify({'erro': 'Preencha título, empresa e nível'}), 400
     v = Vaga(titulo=titulo, descricao=d.get('descricao'), empresa=empresa, nivel_codigo=nivel,
-             status='aberta', salario_min=d.get('salario_min') or None,
-             salario_max=d.get('salario_max') or None, regime=d.get('regime'),
+             status='aberta', salario_min=parse_float(d.get('salario_min')),
+             salario_max=parse_float(d.get('salario_max')), regime=d.get('regime'),
              localizacao=d.get('localizacao'))
     db.session.add(v)
+    db.session.flush()
+    reqs = (d.get('requisitos') or '').strip()
+    if reqs:
+        for r in [x.strip() for x in reqs.split(',') if x.strip()]:
+            db.session.add(Requisito(vaga_id=v.id, skill=r))
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Vaga publicada com sucesso', 'vaga_id': v.id})
 
@@ -815,6 +1071,7 @@ def candidatar(vid):
     d = request.get_json(force=True)
     nome = (d.get('nome') or '').strip()
     email = (d.get('email') or '').strip()
+    skills_informadas = (d.get('skills') or '').strip()
     if not nome or not email:
         return jsonify({'erro': 'Preencha nome e e-mail'}), 400
     cand = Usuario.query.filter_by(email=email).first()
@@ -825,12 +1082,18 @@ def candidatar(vid):
         db.session.flush()
     else:
         cand.nome = nome
+    if skills_informadas:
+        p = Perfil.query.filter_by(usuario_id=cand.id).first()
+        if not p:
+            p = Perfil(usuario_id=cand.id)
+            db.session.add(p)
+        p.skills = skills_informadas
     ja = Candidatura.query.filter_by(vaga_id=vid, candidato_id=cand.id).first()
     if ja:
         return jsonify({'ok': True, 'msg': 'Você já está candidato a esta vaga',
                         'vaga': v.titulo, 'candidato': cand.nome, 'match_score': int(ja.match_score),
                         'status': ja.status})
-    score = random.randint(62, 97)
+    score = calcular_match(v, cand)
     c = Candidatura(vaga_id=vid, candidato_id=cand.id, match_score=score, status='pendente')
     db.session.add(c)
     db.session.commit()
@@ -841,17 +1104,20 @@ def candidatar(vid):
 with app.app_context():
     db.create_all()
     criar_dados_iniciais()
+    garantir_dados_demo()
 
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v3.0')
-    print('  🚀 Turbo: login, paineis e candidaturas reais')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v4.0')
+    print('  🚀 Importacao PCS, match inteligente e busca')
     print('=' * 56)
     print('  🔗 Menu:   http://localhost:5000')
-    print('  🔑 Login:  http://localhost:5000/login')
-    print('  📊 PCS:    http://localhost:5000/pcs')
+    print('  📥 Plano:  http://localhost:5000/importar-plano')
     print('=' * 56)
+    print('  Pressione CTRL+C para parar')
+    print()
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
     print('  Pressione CTRL+C para parar')
     print()
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
