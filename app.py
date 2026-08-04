@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v5.0 — visual inovador, detalhe de vaga, ranking e cadastro de candidato pelo admin."""
+"""Ecossistema de RH Inovador v6.0 — pipeline kanban, visual inovador, ranking e cadastro."""
 
 import os
 import re
@@ -29,6 +29,15 @@ socketio = SocketIO(app, cors_allowed_origins='*')
 
 MAX_CONEXOES = 5
 conexoes_ativas = 0
+
+ETAPAS = ['triagem', 'entrevista', 'proposta', 'contratado', 'rejeitado']
+ETAPAS_INFO = {
+    'triagem': ('Triagem', '#3b82f6'),
+    'entrevista': ('Entrevista', '#22d3ee'),
+    'proposta': ('Proposta', '#f59e0b'),
+    'contratado': ('Contratado', '#10b981'),
+    'rejeitado': ('Rejeitado', '#ef4444'),
+}
 
 # ================= MODELOS =================
 class Usuario(db.Model):
@@ -97,6 +106,7 @@ class Candidatura(db.Model):
     candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
     match_score = db.Column(db.Float, default=0.0)
     status = db.Column(db.String(20), default='pendente')
+    etapa = db.Column(db.String(20), default='triagem')
     criada_em = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ================= HELPERS =================
@@ -245,6 +255,15 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapper
 
+def gestor_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        u = usuario_atual()
+        if not u or u.tipo not in ('admin', 'empresa'):
+            return redirect(url_for('login', next=request.path))
+        return f(*args, **kwargs)
+    return wrapper
+
 def usuario_atual():
     uid = session.get('user_id')
     if uid:
@@ -269,7 +288,8 @@ def pagina(conteudo, ativo=''):
     if u:
         nav.append(('/perfil', '👤', 'Meu Perfil'))
         nav.append(('/importar-plano', '📥', 'Importar Plano'))
-        if u.tipo == 'admin':
+        if u.tipo in ('admin', 'empresa'):
+            nav.append(('/pipeline', '📋', 'Pipeline'))
             nav.append(('/cadastrar-candidato', '👤➕', 'Cadastrar Candidato'))
         nav.append(('/painel', '🔑', 'Meu Painel'))
     itens = ''
@@ -318,11 +338,12 @@ header h1{font-size:22px}header h1 span{color:#22d3ee}
 .tabela td{padding:10px;border-bottom:1px solid rgba(22,40,63,.8)}
 .tabela tr:hover td{background:rgba(15,33,64,.6)}
 .pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px}
-.pill.aberta,.pill.candidato{background:rgba(16,185,129,.14);color:#10b981}
-.pill.fechada{background:rgba(239,68,68,.14);color:#ef4444}
+.pill.aberta,.pill.candidato,.pill.contratado{background:rgba(16,185,129,.14);color:#10b981}
+.pill.fechada,.pill.rejeitado{background:rgba(239,68,68,.14);color:#ef4444}
 .pill.empresa{background:rgba(245,158,11,.14);color:#f59e0b}
 .pill.admin{background:rgba(168,85,247,.14);color:#a855f7}
-.pill.pendente{background:rgba(245,158,11,.14);color:#f59e0b}
+.pill.pendente,.pill.triagem,.pill.proposta{background:rgba(245,158,11,.14);color:#f59e0b}
+.pill.entrevista{background:rgba(34,211,238,.14);color:#22d3ee}
 form label{display:block;margin:12px 0 5px;font-size:13px;color:#9fb0c8}
 form input,form select,form textarea{width:100%;background:rgba(10,22,40,.8);border:1px solid rgba(28,47,74,.8);border-radius:8px;padding:10px 12px;color:#fff;font-size:14px}
 form input:focus,form select:focus,form textarea:focus{outline:none;border-color:#22d3ee}
@@ -334,13 +355,24 @@ form input:focus,form select:focus,form textarea:focus{outline:none;border-color
 .caixa-busca{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
 .caixa-busca input,.caixa-busca select{width:auto;min-width:160px}
 .medalha{display:inline-block;min-width:30px;text-align:center;font-weight:700}
+.kanban{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px}
+.kcol{background:rgba(10,22,40,.5);border:1px solid rgba(28,47,74,.6);border-radius:12px;padding:12px;min-height:220px}
+.kcol h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;color:#8fa3c0;display:flex;justify-content:space-between;align-items:center}
+.kcard{background:rgba(15,33,64,.75);border:1px solid rgba(59,130,246,.25);border-radius:10px;padding:10px;margin-bottom:10px;transition:.2s}
+.kcard:hover{border-color:rgba(34,211,238,.5)}
+.kcard b{font-size:13px;display:block}
+.kcard .meta{font-size:11px;color:#8fa3c0;margin-top:4px}
+.kbtns{display:flex;gap:6px;margin-top:8px}
+.kbtn{background:rgba(30,41,59,.9);color:#fff;border:1px solid rgba(59,130,246,.35);border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer}
+.kbtn:hover{background:#1d4ed8}
+.kbtn.verde:hover{background:#059669}
 footer{margin-top:24px;color:#475569;font-size:12px}
 @media(max-width:800px){body{flex-direction:column}aside{width:100%;border-right:none;border-bottom:1px solid rgba(28,47,74,.7)}main{padding:18px}}
 </style></head><body>
 <aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v5.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v6.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -474,6 +506,55 @@ def pagina_cadastrar_candidato():
           'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
     return pagina(h, '/candidatos')
 
+# ================= PIPELINE (KANBAN) =================
+@app.route('/pipeline')
+@gestor_required
+def pipeline():
+    u = usuario_atual()
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    h = '<h1>Pipeline de Recrutamento <span>// Kanban</span></h1>'
+    h += '<p class="sub">Acompanhe cada candidato na jornada: Triagem → Entrevista → Proposta → Contratado.</p>'
+    if not vagas:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma vaga cadastrada. <a class="link" href="/cadastrar-vaga">Publicar uma vaga →</a></p></div>'
+        return pagina(h, '/pipeline')
+    h += '<div class="caixa-busca"><select id="selvaga" onchange="location.href=\'/pipeline?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if v and vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/vagas/' + str(v.id) + '/ranking">🏆 Ranking</a>'
+    h += '<a class="btn cinza" href="/vagas/' + str(v.id) + '">📋 Detalhes</a></div>'
+    cands = Candidatura.query.filter_by(vaga_id=v.id).all()
+    por_etapa = {e: [] for e in ETAPAS}
+    for c in cands:
+        et = c.etapa if c.etapa in por_etapa else 'triagem'
+        por_etapa[et].append(c)
+    h += '<div class="kanban">'
+    for et in ETAPAS:
+        nome_et, cor = ETAPAS_INFO[et]
+        lista = por_etapa[et]
+        h += '<div class="kcol"><h4><span style="color:' + cor + '">●</span> ' + nome_et + ' <span style="color:' + cor + '">' + str(len(lista)) + '</span></h4>'
+        for c in lista:
+            cand = Usuario.query.get(c.candidato_id)
+            idx = ETAPAS.index(et)
+            btns = ''
+            if idx > 0:
+                btns += '<button class="kbtn" onclick="mover(' + str(c.id) + ',\'' + ETAPAS[idx - 1] + '\')">◀ ' + ETAPAS_INFO[ETAPAS[idx - 1]][0] + '</button>'
+            if idx < len(ETAPAS) - 1:
+                btns += '<button class="kbtn verde" onclick="mover(' + str(c.id) + ',\'' + ETAPAS[idx + 1] + '\')">' + ETAPAS_INFO[ETAPAS[idx + 1]][0] + ' ▶</button>'
+            cor_score = '#10b981' if c.match_score >= 80 else ('#f59e0b' if c.match_score >= 65 else '#ef4444')
+            h += ('<div class="kcard"><b>' + (cand.nome if cand else 'Candidato') + '</b>'
+                  '<div class="meta">Match: <b style="color:' + cor_score + '">' + str(int(c.match_score or 0)) + '%</b></div>'
+                  '<div class="meta">' + (cand.email if cand else '') + '</div>'
+                  '<div class="kbtns">' + btns + '</div></div>')
+        h += '</div>'
+    h += '</div>'
+    h += ('<script>function mover(cid,eta){'
+          'fetch("/api/pipeline/"+cid+"/etapa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({etapa:eta})})'
+          '.then(function(r){return r.json();}).then(function(j){if(j.ok){location.reload();}else{alert(j.erro||"Erro");}});}</script>')
+    return pagina(h, '/pipeline')
+
 # ================= MEU PAINEL =================
 @app.route('/painel')
 @login_required
@@ -490,11 +571,13 @@ def painel():
         cands = Candidatura.query.filter_by(candidato_id=u.id).order_by(Candidatura.id.desc()).all()
         h += '<div class="painel"><h4>Minhas Candidaturas</h4>'
         if cands:
-            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Empresa</th><th>Match Score</th><th>Status</th><th>Data</th></tr></thead><tbody>'
+            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Empresa</th><th>Match Score</th><th>Etapa</th><th>Status</th><th>Data</th></tr></thead><tbody>'
             for c in cands:
                 v = Vaga.query.get(c.vaga_id)
+                et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
                 h += ('<tr><td><b><a class="link" href="/vagas/' + str(v.id) + '">' + (v.titulo if v else 'Vaga') + '</a></b></td><td>' + (v.empresa if v else '-') + '</td>'
                       '<td><b style="color:#22d3ee">' + str(int(c.match_score)) + '%</b></td>'
+                      '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
                       '<td><span class="pill ' + c.status + '">' + c.status + '</span></td>'
                       '<td>' + c.criada_em.strftime('%d/%m/%Y') + '</td></tr>')
             h += '</tbody></table>'
@@ -518,11 +601,12 @@ def painel():
         vagas = Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()
         h += '<div class="painel"><h4>Minhas Vagas</h4>'
         if vagas:
-            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Nível</th><th>Candidaturas</th><th>Ranking</th><th>Status</th></tr></thead><tbody>'
+            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Nível</th><th>Candidaturas</th><th>Pipeline</th><th>Ranking</th><th>Status</th></tr></thead><tbody>'
             for v in vagas:
                 total = Candidatura.query.filter_by(vaga_id=v.id).count()
                 h += ('<tr><td><b><a class="link" href="/vagas/' + str(v.id) + '">' + v.titulo + '</a></b></td><td>' + (v.nivel_codigo or '-') + '</td>'
                       '<td>' + str(total) + '</td>'
+                      '<td><a class="link" href="/pipeline?vaga=' + str(v.id) + '">ver kanban →</a></td>'
                       '<td><a class="link" href="/vagas/' + str(v.id) + '/ranking">ver ranking →</a></td>'
                       '<td><span class="pill ' + v.status + '">' + v.status + '</span></td></tr>')
             h += '</tbody></table>'
@@ -530,7 +614,9 @@ def painel():
             h += '<p style="color:#8fa3c0">Nenhuma vaga publicada. <a class="link" href="/cadastrar-vaga">Publicar vaga →</a></p>'
         h += '</div>'
         h += '<div class="painel"><h4>Gestão</h4><div class="status">'
-        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> <a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
+        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
+        h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
         h += '</div></div>'
     else:
         h += '<div class="painel"><h4>Visão Geral (Administrador)</h4><div class="status">'
@@ -542,6 +628,7 @@ def painel():
         h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> '
+        h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
         h += '<a class="btn verde" href="/importar-plano">📥 Importar Plano PCS</a> '
         h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
         h += '<a class="btn cinza" href="/analytics">📈 Analytics</a>'
@@ -574,7 +661,7 @@ def menu():
     h += '<div class="item"><span class="dot"></span> Servidor Online</div>'
     h += '<div class="item"><span class="dot ciano"></span> Conexões Ativas: <b id="conn2">0/' + str(MAX_CONEXOES) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Agentes Autônomos: <b>5 ativos</b></div>'
-    h += '<div class="item"><span class="dot"></span> Módulos: <b>10</b></div>'
+    h += '<div class="item"><span class="dot"></span> Módulos: <b>11</b></div>'
     h += '</div></div>'
     h += '<script>setInterval(function(){fetch("/api/health").then(function(r){return r.json();}).then(function(d){'
     h += 'var el=document.getElementById("conn2");if(el)el.textContent=d.conexoes_ativas+"/"+d.conexoes_maximas;}).catch(function(){});},3000);</script>'
@@ -689,6 +776,7 @@ def detalhe_vaga(vid):
     u = usuario_atual()
     if u and u.tipo in ('admin', 'empresa'):
         h += '<a class="btn cinza" href="/vagas/' + str(vid) + '/ranking">🏆 Ver Ranking</a>'
+        h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a>'
     h += '</div>'
     return pagina(h, '/vagas')
 
@@ -708,15 +796,17 @@ def ranking_vaga(vid):
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma candidatura nesta vaga ainda. <a class="link" href="/vagas/' + str(vid) + '">Ver vaga →</a></p></div>'
     else:
         medalhas = ['🥇', '🥈', '🥉']
-        h += '<div class="painel"><table class="tabela"><thead><tr><th>Posição</th><th>Candidato</th><th>E-mail</th><th>Match Score</th><th>Status</th></tr></thead><tbody>'
+        h += '<div class="painel"><table class="tabela"><thead><tr><th>Posição</th><th>Candidato</th><th>E-mail</th><th>Match Score</th><th>Etapa</th><th>Status</th></tr></thead><tbody>'
         for i, c in enumerate(cands):
             cand = Usuario.query.get(c.candidato_id)
             pos = i + 1
             medalha = medalhas[i] if i < 3 else '<span class="medalha">' + str(pos) + 'º</span>'
             cor_score = '#10b981' if c.match_score >= 80 else ('#f59e0b' if c.match_score >= 65 else '#ef4444')
+            et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
             h += ('<tr><td>' + medalha + '</td><td><b>' + (cand.nome if cand else '-') + '</b></td>'
                   '<td>' + (cand.email if cand else '-') + '</td>'
                   '<td><b style="color:' + cor_score + '">' + str(int(c.match_score)) + '%</b></td>'
+                  '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
                   '<td><span class="pill ' + c.status + '">' + c.status + '</span></td></tr>')
         h += '</tbody></table></div>'
         melhor = cands[0]
@@ -724,7 +814,8 @@ def ranking_vaga(vid):
         if cand_top:
             h += '<div class="painel"><h4>⭐ Melhor Candidato</h4><p style="font-size:14px">'
             h += '<b>' + cand_top.nome + '</b> lidera com <b style="color:#22d3ee">' + str(int(melhor.match_score)) + '%</b> de compatibilidade.</p></div>'
-    h += '<div class="status"><a class="btn cinza" href="/vagas/' + str(vid) + '">← Voltar para a vaga</a></div>'
+    h += '<div class="status"><a class="btn cinza" href="/vagas/' + str(vid) + '">← Voltar para a vaga</a> '
+    h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a></div>'
     return pagina(h, '/vagas')
 
 @app.route('/vagas/<int:vid>/candidatar')
@@ -899,14 +990,29 @@ def analytics():
         h += '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span>' + cod + '</span><b>' + str(qtd) + '</b></div>'
         h += '<div style="background:rgba(10,22,40,.8);border-radius:6px;height:10px;margin-top:4px"><div style="background:linear-gradient(90deg,#1d4ed8,#22d3ee);width:' + str(pct) + '%;height:10px;border-radius:6px"></div></div></div>'
     h += '</div>'
+    por_etapa = {}
+    for c in Candidatura.query.all():
+        et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
+        por_etapa[et] = por_etapa.get(et, 0) + 1
+    if por_etapa:
+        h += '<div class="painel"><h4>Distribuição por Etapa (Pipeline)</h4>'
+        for et in ETAPAS:
+            qtd = por_etapa.get(et, 0)
+            if qtd:
+                nome_et, cor = ETAPAS_INFO[et]
+                h += '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span style="color:' + cor + '">●</span> <span>' + nome_et + '</span><b>' + str(qtd) + '</b></div>'
+                h += '<div style="background:rgba(10,22,40,.8);border-radius:6px;height:10px;margin-top:4px"><div style="background:' + cor + ';width:' + str(min(100, int(qtd / max(1, max(por_etapa.values())) * 100))) + '%;height:10px;border-radius:6px"></div></div></div>'
+        h += '</div>'
     ultimas = Candidatura.query.order_by(Candidatura.id.desc()).limit(10).all()
     if ultimas:
-        h += '<div class="painel"><h4>Últimas Candidaturas</h4><table class="tabela"><thead><tr><th>Vaga</th><th>Candidato</th><th>Match</th><th>Status</th></tr></thead><tbody>'
+        h += '<div class="painel"><h4>Últimas Candidaturas</h4><table class="tabela"><thead><tr><th>Vaga</th><th>Candidato</th><th>Match</th><th>Etapa</th><th>Status</th></tr></thead><tbody>'
         for c in ultimas:
             v = Vaga.query.get(c.vaga_id)
             u = Usuario.query.get(c.candidato_id)
+            et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
             h += ('<tr><td>' + (v.titulo if v else '-') + '</td><td>' + (u.nome if u else '-') + '</td>'
                   '<td><b style="color:#22d3ee">' + str(int(c.match_score or 0)) + '%</b></td>'
+                  '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
                   '<td><span class="pill ' + c.status + '">' + c.status + '</span></td></tr>')
         h += '</tbody></table></div>'
     return pagina(h, '/analytics')
@@ -992,10 +1098,10 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '5.0.0',
+        'status': 'online', 'versao': '6.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
-                    'recrutamento', 'analytics', 'experiencia', 'inovacao'],
+                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline'],
         'agentes': ['sourcing', 'triagem', 'scheduling', 'followup', 'dei'],
         'trilhas': Trilha.query.count(), 'niveis': Nivel.query.count(), 'vagas': Vaga.query.count(),
         'candidaturas': Candidatura.query.count(),
@@ -1195,6 +1301,28 @@ def api_admin_cadastrar_candidato():
     return jsonify({'ok': True, 'msg': 'Candidato cadastrado com sucesso',
                     'candidato': {'id': novo.id, 'nome': novo.nome, 'email': novo.email}}), 201
 
+@app.route('/api/pipeline/<int:cid>/etapa', methods=['POST'])
+def pipeline_etapa(cid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    c = Candidatura.query.get(cid)
+    if not c:
+        return jsonify({'erro': 'Candidatura não encontrada'}), 404
+    d = request.get_json(force=True)
+    etapa = (d.get('etapa') or '').strip()
+    if etapa not in ETAPAS:
+        return jsonify({'erro': 'Etapa inválida'}), 400
+    c.etapa = etapa
+    if etapa == 'contratado':
+        c.status = 'aprovado'
+    elif etapa == 'rejeitado':
+        c.status = 'rejeitado'
+    elif c.status in ('aprovado', 'rejeitado'):
+        c.status = 'pendente'
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Candidato movido para ' + ETAPAS_INFO[etapa][0], 'etapa': etapa})
+
 @app.route('/api/vagas/<int:vid>/candidatar', methods=['POST'])
 def candidatar(vid):
     v = Vaga.query.get(vid)
@@ -1224,28 +1352,34 @@ def candidatar(vid):
     if ja:
         return jsonify({'ok': True, 'msg': 'Você já está candidato a esta vaga',
                         'vaga': v.titulo, 'candidato': cand.nome, 'match_score': int(ja.match_score),
-                        'status': ja.status})
+                        'status': ja.status, 'etapa': ja.etapa})
     score = calcular_match(v, cand)
-    c = Candidatura(vaga_id=vid, candidato_id=cand.id, match_score=score, status='pendente')
+    c = Candidatura(vaga_id=vid, candidato_id=cand.id, match_score=score, status='pendente', etapa='triagem')
     db.session.add(c)
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Candidatura enviada', 'vaga': v.titulo, 'empresa': v.empresa,
-                    'candidato': cand.nome, 'email': email, 'match_score': score, 'status': 'pendente'})
+                    'candidato': cand.nome, 'email': email, 'match_score': score, 'status': 'pendente',
+                    'etapa': 'triagem'})
 
 # ================= INICIO =================
 with app.app_context():
     db.create_all()
+    try:
+        db.session.execute("ALTER TABLE candidatura ADD COLUMN IF NOT EXISTS etapa VARCHAR(20) DEFAULT 'triagem'")
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
     criar_dados_iniciais()
     garantir_dados_demo()
 
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v5.0')
-    print('  🚀 Visual inovador, detalhe de vaga, ranking e cadastro de candidato')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v6.0')
+    print('  📋 Pipeline Kanban + visual inovador')
     print('=' * 56)
-    print('  🔗 Menu:   http://localhost:5000')
-    print('  📥 Plano:  http://localhost:5000/importar-plano')
+    print('  🔗 Menu:    http://localhost:5000')
+    print('  📋 Kanban:  http://localhost:5000/pipeline')
     print('=' * 56)
     print('  Pressione CTRL+C para parar')
     print()
