@@ -1674,7 +1674,7 @@ def api_registro():
         return jsonify({'erro': 'Senha deve ter pelo menos 6 caracteres'}), 400
     if Usuario.query.filter_by(email=email).first():
         return jsonify({'erro': 'Email já cadastrado'}), 409
-    u = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha), tipo=tipo, ativo=True)
+   u = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha), tipo=tipo, ativo=True, grupo=tipo)
     db.session.add(u)
     db.session.commit()
     if tipo == 'empresa':
@@ -1836,7 +1836,7 @@ def api_admin_cadastrar_candidato():
     if Usuario.query.filter_by(email=email).first():
         return jsonify({'erro': 'E-mail já cadastrado'}), 409
     novo = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha),
-                   tipo='candidato', ativo=True)
+                   tipo='candidato', ativo=True, grupo='candidato')
     db.session.add(novo)
     db.session.flush()
     skills = (d.get('skills') or '').strip()
