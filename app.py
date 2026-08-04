@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v8.0 — central de entrevistas, pipeline, chat, ranking."""
+"""Ecossistema de RH Inovador v9.0 — gestao de usuarios, permissoes, edicao de candidatos, chat."""
 
 import os
 import re
@@ -39,6 +39,14 @@ ETAPAS_INFO = {
     'rejeitado': ('Rejeitado', '#ef4444'),
 }
 
+MODULOS_GERENCIAVEIS = ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
+                        'pipeline', 'entrevistas', 'cadastrar_vaga', 'cadastrar_empresa',
+                        'importar_plano', 'perfil', 'painel']
+PERMISSOES_PADRAO = {
+    'candidato': ['vagas', 'candidatos', 'pcs', 'analytics', 'mensagens', 'perfil', 'painel'],
+    'empresa': MODULOS_GERENCIAVEIS,
+}
+
 # ================= MODELOS =================
 class Usuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -54,6 +62,12 @@ class Perfil(db.Model):
     skills = db.Column(db.Text)
     resumo = db.Column(db.Text)
     linkedin = db.Column(db.String(200))
+
+class Permissao(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    modulo = db.Column(db.String(50), nullable=False)
+    habilitado = db.Column(db.Boolean, default=True)
 
 class Empresa(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -166,19 +180,24 @@ def usuario_empresa_da_vaga(v):
         return u
     return Usuario.query.filter_by(tipo='empresa').first()
 
+def tem_permissao(u, modulo):
+    if not u:
+        return False
+    if u.tipo == 'admin':
+        return True
+    if modulo not in MODULOS_GERENCIAVEIS:
+        return True
+    p = Permissao.query.filter_by(usuario_id=u.id, modulo=modulo).first()
+    if p:
+        return p.habilitado
+    return modulo in PERMISSOES_PADRAO.get(u.tipo, [])
+
 def contar_nao_lidas(u):
     convs = Conversa.query.filter((Conversa.candidato_id == u.id) | (Conversa.empresa_id == u.id)).all()
     total = 0
     for c in convs:
         total += Mensagem.query.filter_by(conversa_id=c.id, lida=False).filter(Mensagem.remetente_id != u.id).count()
     return total
-
-def badge_entrevista(c):
-    ent = Entrevista.query.filter_by(vaga_id=c.vaga_id, candidato_id=c.candidato_id).order_by(Entrevista.id.desc()).first()
-    if not ent:
-        return ''
-    cor = {'agendada': '#f59e0b', 'confirmada': '#22d3ee', 'realizada': '#10b981', 'cancelada': '#ef4444'}.get(ent.status, '#8fa3c0')
-    return '<span class="pill" style="background:rgba(245,158,11,.12);color:' + cor + '">🎥 ' + ent.data_hora.strftime('%d/%m %H:%M') + '</span>'
 
 # ================= SEED =================
 def criar_dados_iniciais():
@@ -271,6 +290,14 @@ def garantir_dados_demo():
                 db.session.add(Requisito(vaga_id=v.id, skill=r))
     db.session.commit()
 
+def garantir_permissoes():
+    for u in Usuario.query.filter(Usuario.tipo != 'admin').all():
+        for mod in MODULOS_GERENCIAVEIS:
+            if not Permissao.query.filter_by(usuario_id=u.id, modulo=mod).first():
+                db.session.add(Permissao(usuario_id=u.id, modulo=mod,
+                                         habilitado=mod in PERMISSOES_PADRAO.get(u.tipo, [])))
+    db.session.commit()
+
 # ================= WEBSOCKET =================
 @socketio.on('connect')
 def on_connect():
@@ -350,16 +377,24 @@ def pagina(conteudo, ativo=''):
     if u:
         nao_lidas = contar_nao_lidas(u)
         badge = (' <span class="pill nv">' + str(nao_lidas) + '</span>') if nao_lidas else ''
-        nav.append(('/mensagens', '💬', 'Mensagens'))
-        nav.append(('/perfil', '👤', 'Meu Perfil'))
-        nav.append(('/importar-plano', '📥', 'Importar Plano'))
+        if tem_permissao(u, 'mensagens'):
+            nav.append(('/mensagens', '💬', 'Mensagens'))
+        if tem_permissao(u, 'perfil'):
+            nav.append(('/perfil', '👤', 'Meu Perfil'))
+        if tem_permissao(u, 'importar_plano'):
+            nav.append(('/importar-plano', '📥', 'Importar Plano'))
         if u.tipo in ('admin', 'empresa'):
-            nav.append(('/pipeline', '📋', 'Pipeline'))
-            nav.append(('/entrevistas', '🎥', 'Entrevistas'))
-            nav.append(('/cadastrar-candidato', '👤➕', 'Cadastrar Candidato'))
+            if tem_permissao(u, 'pipeline'):
+                nav.append(('/pipeline', '📋', 'Pipeline'))
+            if tem_permissao(u, 'entrevistas'):
+                nav.append(('/entrevistas', '🎥', 'Entrevistas'))
+            if u.tipo == 'admin':
+                nav.append(('/cadastrar-candidato', '👤➕', 'Cadastrar Candidato'))
+                nav.append(('/gerenciar', '⚙️', 'Gerenciar'))
         else:
             nav.append(('/minhas-entrevistas', '🎥', 'Entrevistas'))
-        nav.append(('/painel', '🔑', 'Meu Painel'))
+        if tem_permissao(u, 'painel'):
+            nav.append(('/painel', '🔑', 'Meu Painel'))
     itens = ''
     for href, icone, nome in nav:
         cls = ' class="ativo"' if href == ativo else ''
@@ -454,7 +489,7 @@ footer{margin-top:24px;color:#475569;font-size:12px}
 <aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v8.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v9.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -514,6 +549,8 @@ def logout():
 @login_required
 def perfil():
     u = usuario_atual()
+    if not tem_permissao(u, 'perfil'):
+        return redirect(url_for('painel'))
     p = Perfil.query.filter_by(usuario_id=u.id).first()
     sk = p.skills if p else ''
     resumo = p.resumo if p else ''
@@ -539,6 +576,9 @@ def perfil():
 @app.route('/importar-plano')
 @login_required
 def importar_plano():
+    u = usuario_atual()
+    if not tem_permissao(u, 'importar_plano'):
+        return redirect(url_for('painel'))
     h = '<h1>Importar Plano de Carreiras <span>// PCS</span></h1>'
     h += '<p class="sub">Cole a tabela do seu plano (Word/PDF). Cada linha = um nível. Formato: Trilha; Código; Nível; Sal. Mín; Sal. Máx; Autonomia; Impacto</p>'
     h += '<div class="painel" style="max-width:760px">'
@@ -588,6 +628,114 @@ def pagina_cadastrar_candidato():
           'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
     return pagina(h, '/candidatos')
 
+# ================= ADMIN: EDITAR CANDIDATO =================
+@app.route('/editar-candidato/<int:uid>')
+@admin_required
+def editar_candidato(uid):
+    alvo = Usuario.query.get(uid)
+    if not alvo or alvo.tipo != 'candidato':
+        return pagina('<h1>Candidato não encontrado</h1>', '/candidatos')
+    p = Perfil.query.filter_by(usuario_id=uid).first()
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    h = '<h1>✏️ Editar Candidato <span>// ' + alvo.nome + '</span></h1>'
+    h += '<p class="sub"><a class="link" href="/candidatos">← Voltar para candidatos</a> • <a class="link" href="/gerenciar">⚙️ Gerenciar</a></p>'
+    h += '<div class="painel" style="max-width:640px"><h4>📋 Dados do Candidato</h4><form id="f">'
+    h += '<label>Nome *</label><input id="nome" required value="' + alvo.nome + '">'
+    h += '<label>E-mail *</label><input id="email" type="email" required value="' + alvo.email + '">'
+    h += '<label>Nova senha (deixe vazio para manter)</label><input id="senha" type="password" placeholder="Somente se quiser trocar">'
+    h += '<label>Skills (separadas por vírgula)</label><input id="skills" value="' + (p.skills if p and p.skills else '') + '">'
+    h += '<label>Resumo profissional</label><textarea id="resumo" rows="3">' + (p.resumo if p and p.resumo else '') + '</textarea>'
+    h += '<label><input type="checkbox" id="ativo" ' + ('checked' if alvo.ativo else '') + ' style="width:auto"> Conta ativa (pode entrar)</label>'
+    h += '<div style="margin-top:16px"><button class="btn verde" type="submit">💾 Salvar alterações</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    h += '<div class="painel" style="max-width:640px"><h4>🎥 Agendar Entrevista</h4><form id="f2">'
+    h += '<label>Vaga *</label><select id="vaga_id" required><option value="">Selecione...</option>'
+    for v in vagas:
+        h += '<option value="' + str(v.id) + '">' + v.titulo + ' (' + (v.empresa or '') + ')</option>'
+    h += '</select>'
+    h += '<label>Data *</label><input id="data" type="date" required value="' + (datetime.utcnow() + timedelta(days=2)).strftime('%Y-%m-%d') + '">'
+    h += '<label>Hora *</label><input id="hora" type="time" required value="14:00">'
+    h += '<label>Tipo</label><select id="tipo"><option value="Video">🎥 Vídeo</option><option value="Presencial">🏢 Presencial</option><option value="Telefonica">📞 Telefônica</option></select>'
+    h += '<label>Link da sala (opcional)</label><input id="link" placeholder="https://meet.google.com/...">'
+    h += '<div style="margin-top:16px"><button class="btn" type="submit">🎥 Agendar entrevista</button></div>'
+    h += '<div class="mensagem" id="msg2"></div></form></div>'
+    convs = Conversa.query.filter_by(candidato_id=uid).all()
+    if convs:
+        h += '<div class="painel"><h4>💬 Conversas deste candidato</h4>'
+        for c in convs:
+            v = Vaga.query.get(c.vaga_id)
+            h += '<p><a class="link" href="/mensagens/' + str(c.id) + '">💬 ' + (v.titulo if v else 'Vaga') + ' → abrir chat</a></p>'
+        h += '</div>'
+    ents = Entrevista.query.filter_by(candidato_id=uid).order_by(Entrevista.id.desc()).all()
+    if ents:
+        h += '<div class="painel"><h4>🎥 Entrevistas deste candidato</h4>'
+        for e in ents:
+            v = Vaga.query.get(e.vaga_id)
+            nota = (' • ⭐ ' + str(int(e.nota)) + '/10') if e.nota is not None else ''
+            h += '<p>📅 ' + e.data_hora.strftime('%d/%m/%Y %H:%M') + ' • ' + (v.titulo if v else '') + ' • <span class="pill ' + e.status + '">' + e.status + '</span>' + nota + '</p>'
+        h += '</div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/admin/editar-candidato",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({usuario_id:' + str(uid) + ',nome:document.getElementById("nome").value,'
+          'email:document.getElementById("email").value,senha:document.getElementById("senha").value,'
+          'skills:document.getElementById("skills").value,resumo:document.getElementById("resumo").value,'
+          'ativo:document.getElementById("ativo").checked})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Candidato atualizado!";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'document.getElementById("f2").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/admin/agendar-entrevista",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({candidato_id:' + str(uid) + ',vaga_id:document.getElementById("vaga_id").value,'
+          'data:document.getElementById("data").value,hora:document.getElementById("hora").value,'
+          'tipo:document.getElementById("tipo").value,link:document.getElementById("link").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg2");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Entrevista agendada! <a class=link href=/editar-candidato/' + str(uid) + '>Atualizar →</a>";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
+    return pagina(h, '/editar-candidato')
+
+# ================= ADMIN: GERENCIAR PERMISSOES =================
+@app.route('/gerenciar')
+@admin_required
+def gerenciar():
+    usuarios = Usuario.query.filter(Usuario.tipo != 'admin').order_by(Usuario.tipo, Usuario.nome).all()
+    h = '<h1>⚙️ Gerenciamento <span>// Permissões dos usuários</span></h1>'
+    h += '<p class="sub">Habilite o que cada usuário pode ver e alterar. O administrador tem acesso total.</p>'
+    if not usuarios:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum usuário além do admin cadastrado.</p></div>'
+        return pagina(h, '/gerenciar')
+    for alvo in usuarios:
+        perms = {p.modulo: p.habilitado for p in Permissao.query.filter_by(usuario_id=alvo.id).all()}
+        h += '<div class="painel">'
+        h += '<div class="status" style="justify-content:space-between;align-items:center;margin-bottom:12px">'
+        h += '<div><b>' + alvo.nome + '</b> <span class="pill ' + alvo.tipo + '">' + alvo.tipo + '</span><br>'
+        h += '<span style="color:#8fa3c0;font-size:12px">' + alvo.email + '</span></div>'
+        h += '<div class="status"><label style="font-size:12px"><input type="checkbox" id="ativo_' + str(alvo.id) + '" ' + ('checked' if alvo.ativo else '') + ' style="width:auto"> Ativo</label>'
+        if alvo.tipo == 'candidato':
+            h += ' <a class="btn cinza" href="/editar-candidato/' + str(alvo.id) + '">✏️ Editar</a>'
+        h += '</div></div>'
+        h += '<div class="status" id="mods_' + str(alvo.id) + '">'
+        for mod in MODULOS_GERENCIAVEIS:
+            checked = ' checked' if perms.get(mod, mod in PERMISSOES_PADRAO.get(alvo.tipo, [])) else ''
+            h += ('<label style="font-size:12px;display:flex;align-items:center;gap:4px;background:rgba(15,33,64,.5);'
+                  'padding:4px 8px;border-radius:6px"><input type="checkbox" data-mod="' + mod + '"' + checked + ' style="width:auto"> '
+                  + mod.replace('_', ' ').title() + '</label>')
+        h += '</div>'
+        h += '<button class="btn verde" style="margin-top:12px" onclick="salvarPerm(' + str(alvo.id) + ')">💾 Salvar permissões de ' + alvo.nome.split()[0] + '</button>'
+        h += '<div class="mensagem" id="msg_' + str(alvo.id) + '"></div></div>'
+    h += ('<script>function salvarPerm(uid){var mods={};'
+          'document.querySelectorAll("#mods_"+uid+" input[data-mod]").forEach(function(cb){mods[cb.getAttribute("data-mod")]=cb.checked;});'
+          'mods["_ativo"]=document.getElementById("ativo_"+uid)?document.getElementById("ativo_"+uid).checked:true;'
+          'fetch("/api/admin/permissoes",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({usuario_id:uid,permissoes:mods})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg_"+uid);if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Permissões salvas!";}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});}</script>')
+    return pagina(h, '/gerenciar')
+
 # ================= CENTRAL DE ENTREVISTAS =================
 @app.route('/entrevistas')
 @gestor_required
@@ -608,7 +756,7 @@ def entrevistas():
     ent_list = Entrevista.query.filter_by(vaga_id=v.id).order_by(Entrevista.data_hora.desc()).all()
     if not ent_list:
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma entrevista agendada para esta vaga. '
-        h += 'Agende direto pelo <a class="link" href="/pipeline?vaga=' + str(v.id) + '">Pipeline</a> (botão 🎥 no cartão do candidato).</p></div>'
+        h += 'Agende direto pelo <a class="link" href="/pipeline?vaga=' + str(v.id) + '">Pipeline</a> (botão 🎥 no cartão) ou pelo <a class="link" href="/gerenciar">Gerenciamento</a>.</p></div>'
     else:
         h += '<div class="painel"><table class="tabela"><thead><tr><th>Candidato</th><th>Data/Hora</th><th>Tipo</th><th>Status</th><th>Nota</th><th>Ações</th></tr></thead><tbody>'
         for e in ent_list:
@@ -670,7 +818,6 @@ def minhas_entrevistas():
     else:
         for e in ent_list:
             v = Vaga.query.get(e.vaga_id)
-            cand_ent = Entrevista.query.filter_by(vaga_id=e.vaga_id, candidato_id=u.id).order_by(Entrevista.id.desc()).first()
             status_badge = '<span class="pill ' + e.status + '">' + e.status + '</span>'
             link_acao = ''
             if e.status == 'agendada':
@@ -691,6 +838,8 @@ def minhas_entrevistas():
 @login_required
 def mensagens():
     u = usuario_atual()
+    if not tem_permissao(u, 'mensagens'):
+        return redirect(url_for('painel'))
     convs = Conversa.query.filter((Conversa.candidato_id == u.id) | (Conversa.empresa_id == u.id)).order_by(Conversa.id.desc()).all()
     h = '<h1>Mensagens <span>// ' + u.nome + '</span></h1>'
     h += '<p class="sub">Conversas entre candidatos e empresas. Clique para abrir.</p>'
@@ -699,7 +848,7 @@ def mensagens():
         if u.tipo == 'candidato':
             h += '<a class="link" href="/vagas">Candidatar-se a uma vaga →</a></p></div>'
         else:
-            h += 'Quando um candidato se candidatar às suas vagas, você pode conversar com ele pelo <a class="link" href="/pipeline">Pipeline</a>.</p></div>'
+            h += 'Clique no botão 💬 no <a class="link" href="/pipeline">Pipeline</a> ou no <a class="link" href="/vagas/1/ranking">Ranking</a> para iniciar uma conversa com o candidato.</p></div>'
         return pagina(h, '/mensagens')
     for c in convs:
         v = Vaga.query.get(c.vaga_id)
@@ -731,6 +880,26 @@ def abrir_conversa(vid):
             db.session.commit()
         return redirect(url_for('chat', cid=c.id))
     return redirect(url_for('mensagens'))
+
+@app.route('/conversa-iniciar')
+@login_required
+def conversa_iniciar():
+    u = usuario_atual()
+    vaga_id = request.args.get('vaga', type=int)
+    cand_id = request.args.get('candidato', type=int)
+    v = Vaga.query.get(vaga_id)
+    c_user = Usuario.query.get(cand_id)
+    if not v or not c_user or c_user.tipo != 'candidato':
+        return redirect(url_for('vagas'))
+    if u.tipo == 'candidato':
+        return redirect(url_for('abrir_conversa', vid=vaga_id))
+    emp = u if u.tipo == 'empresa' else (usuario_empresa_da_vaga(v) or u)
+    conv = Conversa.query.filter_by(vaga_id=vaga_id, candidato_id=cand_id).first()
+    if not conv:
+        conv = Conversa(vaga_id=vaga_id, candidato_id=cand_id, empresa_id=emp.id)
+        db.session.add(conv)
+        db.session.commit()
+    return redirect(url_for('chat', cid=conv.id))
 
 @app.route('/mensagens/<int:cid>')
 @login_required
@@ -776,7 +945,6 @@ def chat(cid):
 @app.route('/pipeline')
 @gestor_required
 def pipeline():
-    u = usuario_atual()
     vaga_id = request.args.get('vaga', type=int)
     vagas = Vaga.query.order_by(Vaga.id.desc()).all()
     v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
@@ -810,11 +978,7 @@ def pipeline():
                 btns += '<button class="kbtn" onclick="mover(' + str(c.id) + ',\'' + ETAPAS[idx - 1] + '\')">◀ ' + ETAPAS_INFO[ETAPAS[idx - 1]][0] + '</button>'
             if idx < len(ETAPAS) - 1:
                 btns += '<button class="kbtn verde" onclick="mover(' + str(c.id) + ',\'' + ETAPAS[idx + 1] + '\')">' + ETAPAS_INFO[ETAPAS[idx + 1]][0] + ' ▶</button>'
-            conv = Conversa.query.filter_by(vaga_id=v.id, candidato_id=c.candidato_id).first()
-            if conv:
-                btns += '<a class="kbtn" href="/mensagens/' + str(conv.id) + '">💬</a>'
-            else:
-                btns += '<a class="kbtn" href="/conversa/' + str(v.id) + '">💬</a>'
+            btns += '<a class="kbtn" href="/conversa-iniciar?vaga=' + str(v.id) + '&candidato=' + str(c.candidato_id) + '">💬</a>'
             ent = Entrevista.query.filter_by(vaga_id=v.id, candidato_id=c.candidato_id).order_by(Entrevista.id.desc()).first()
             if ent:
                 btns += '<a class="kbtn roxo" href="/entrevistas?vaga=' + str(v.id) + '">🎥 ' + ent.status + '</a>'
@@ -865,6 +1029,8 @@ def agendar_entrevista():
 @login_required
 def painel():
     u = usuario_atual()
+    if not tem_permissao(u, 'painel'):
+        return redirect(url_for('menu'))
     h = '<h1>Meu Painel <span>// ' + u.nome + '</span></h1><p class="sub">Acompanhe suas atividades no ecossistema.</p>'
     if u.tipo == 'candidato':
         p = Perfil.query.filter_by(usuario_id=u.id).first()
@@ -921,8 +1087,6 @@ def painel():
         else:
             h += '<p style="color:#8fa3c0">Complete seu perfil: <a class="link" href="/cadastrar-empresa">Cadastrar Empresa →</a></p>'
         h += '</div>'
-        minhas_vagas_ids = [v.id for v in Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()]
-        total_ents = Entrevista.query.filter(Entrevista.vaga_id.in_(minhas_vagas_ids)).count() if minhas_vagas_ids else 0
         vagas = Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()
         h += '<div class="painel"><h4>Minhas Vagas</h4>'
         if vagas:
@@ -941,7 +1105,7 @@ def painel():
         h += '<div class="painel"><h4>Gestão</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
-        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas (' + str(total_ents) + ')</a> '
+        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
         h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
         h += '<a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
         h += '</div></div>'
@@ -957,6 +1121,7 @@ def painel():
         h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> '
+        h += '<a class="btn" href="/gerenciar">⚙️ Gerenciar Usuários</a> '
         h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
         h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
         h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
@@ -964,6 +1129,15 @@ def painel():
         h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
         h += '<a class="btn cinza" href="/analytics">📈 Analytics</a>'
         h += '</div></div>'
+        candidatos = Usuario.query.filter_by(tipo='candidato').order_by(Usuario.nome).all()
+        if candidatos:
+            h += '<div class="painel"><h4>👤 Candidatos (editar / agendar)</h4>'
+            h += '<table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Ações</th></tr></thead><tbody>'
+            for cand in candidatos:
+                h += ('<tr><td><b>' + cand.nome + '</b></td><td>' + cand.email + '</td>'
+                      '<td><span class="pill ' + ('candidato' if cand.ativo else 'fechada') + '">' + ('Ativo' if cand.ativo else 'Inativo') + '</span></td>'
+                      '<td><a class="btn cinza" href="/editar-candidato/' + str(cand.id) + '">✏️ Editar / Agendar</a></td></tr>')
+            h += '</tbody></table></div>'
     return pagina(h, '/painel')
 
 # ================= PAGINAS PUBLICAS =================
@@ -992,7 +1166,7 @@ def menu():
     h += '<div class="item"><span class="dot"></span> Servidor Online</div>'
     h += '<div class="item"><span class="dot ciano"></span> Conexões Ativas: <b id="conn2">0/' + str(MAX_CONEXOES) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Agentes Autônomos: <b>5 ativos</b></div>'
-    h += '<div class="item"><span class="dot"></span> Módulos: <b>13</b></div>'
+    h += '<div class="item"><span class="dot"></span> Módulos: <b>14</b></div>'
     h += '</div></div>'
     h += '<script>setInterval(function(){fetch("/api/health").then(function(r){return r.json();}).then(function(d){'
     h += 'var el=document.getElementById("conn2");if(el)el.textContent=d.conexoes_ativas+"/"+d.conexoes_maximas;}).catch(function(){});},3000);</script>'
@@ -1005,7 +1179,7 @@ def pcs():
     h = '<h1>Plano de Cargos e Salários <span>// PCS</span></h1>'
     h += '<p class="sub">' + str(len(trilhas)) + ' trilhas • ' + str(len(niveis)) + ' níveis • faixas salariais dinâmicas'
     u = usuario_atual()
-    if u:
+    if u and tem_permissao(u, 'importar_plano'):
         h += ' • <a class="link" href="/importar-plano">📥 Importar/Atualizar plano</a>'
     h += '</p>'
     for t in trilhas:
@@ -1040,6 +1214,7 @@ def vagas():
     if regime:
         query = query.filter_by(regime=regime)
     lista = query.order_by(Vaga.id.desc()).all()
+    u = usuario_atual()
     h = '<h1>Vagas <span>// Oportunidades</span></h1>'
     h += '<p class="sub">' + str(len(lista)) + ' vagas abertas' + (' • filtro: ' + q if q else '') + '</p>'
     h += '<div class="caixa-busca">'
@@ -1062,7 +1237,8 @@ def vagas():
           'var nv=document.getElementById("nivel").value;if(nv)p.set("nivel",nv);'
           'var rv=document.getElementById("regime").value;if(rv)p.set("regime",rv);'
           'location.href="/vagas"+(p.toString()?"?"+p.toString():"");}</script>')
-    h += '<div class="painel"><p><a class="btn cinza" href="/cadastrar-vaga">➕ Nova Vaga</a></p></div>'
+    if u and tem_permissao(u, 'cadastrar_vaga'):
+        h += '<div class="painel"><p><a class="btn cinza" href="/cadastrar-vaga">➕ Nova Vaga</a></p></div>'
     if not lista:
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma vaga encontrada com esses filtros.</p></div>'
     for v in lista:
@@ -1105,7 +1281,7 @@ def detalhe_vaga(vid):
     h += '<div class="status">'
     h += '<a class="btn" href="/vagas/' + str(vid) + '/candidatar">📩 Candidatar-se</a>'
     u = usuario_atual()
-    if u:
+    if u and tem_permissao(u, 'mensagens'):
         h += '<a class="btn cinza" href="/conversa/' + str(vid) + '">💬 Falar com a empresa</a>'
     if u and u.tipo in ('admin', 'empresa'):
         h += '<a class="btn cinza" href="/vagas/' + str(vid) + '/ranking">🏆 Ver Ranking</a>'
@@ -1137,9 +1313,7 @@ def ranking_vaga(vid):
             medalha = medalhas[i] if i < 3 else '<span class="medalha">' + str(pos) + 'º</span>'
             cor_score = '#10b981' if c.match_score >= 80 else ('#f59e0b' if c.match_score >= 65 else '#ef4444')
             et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
-            conv = Conversa.query.filter_by(vaga_id=vid, candidato_id=c.candidato_id).first()
-            chat_link = ('<a class="link" href="/mensagens/' + str(conv.id) + '">💬</a>' if conv
-                         else '<a class="link" href="/conversa/' + str(vid) + '">💬</a>')
+            chat_link = '<a class="link" href="/conversa-iniciar?vaga=' + str(vid) + '&candidato=' + str(c.candidato_id) + '">💬</a>'
             ent = Entrevista.query.filter_by(vaga_id=vid, candidato_id=c.candidato_id).order_by(Entrevista.id.desc()).first()
             ent_html = '-'
             if ent:
@@ -1199,6 +1373,9 @@ def form_candidatura(vid):
 @app.route('/cadastrar-vaga')
 @login_required
 def pagina_cadastrar_vaga():
+    u = usuario_atual()
+    if not tem_permissao(u, 'cadastrar_vaga'):
+        return redirect(url_for('painel'))
     h = '<h1>Publicar Vaga <span>// Nova oportunidade</span></h1><p class="sub">Publique uma vaga e o Agente Sourcing busca talentos automaticamente</p>'
     h += '<div class="painel" style="max-width:640px"><form id="f">'
     h += '<label>Título da vaga *</label><input id="titulo" required placeholder="ex: Desenvolvedor(a) Python Pleno">'
@@ -1232,7 +1409,11 @@ def pagina_cadastrar_vaga():
     return pagina(h, '/vagas')
 
 @app.route('/cadastrar-empresa')
+@login_required
 def pagina_cadastrar_empresa():
+    u = usuario_atual()
+    if not tem_permissao(u, 'cadastrar_empresa'):
+        return redirect(url_for('painel'))
     h = '<h1>Cadastrar Empresa <span>// Contratante</span></h1><p class="sub">Crie o perfil da sua organização no ecossistema</p>'
     h += '<div class="painel" style="max-width:640px"><form id="f">'
     h += '<label>Razão Social *</label><input id="razao_social" required placeholder="ex: RH Inovador S.A.">'
@@ -1282,29 +1463,36 @@ def recrutamento():
 @app.route('/candidatos')
 def candidatos():
     lista = Usuario.query.filter_by(tipo='candidato').all()
+    u = usuario_atual()
     h = '<h1>Candidatos <span>// Talentos</span></h1>'
     h += '<p class="sub">' + str(len(lista)) + ' profissionais no ecossistema</p>'
-    h += '<div class="painel"><table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Skills</th><th>Candidaturas</th><th>Status</th></tr></thead><tbody>'
-    for u in lista:
-        p = Perfil.query.filter_by(usuario_id=u.id).first()
-        total = Candidatura.query.filter_by(candidato_id=u.id).count()
+    if u and u.tipo == 'admin':
+        h += '<div class="painel"><p><a class="btn cinza" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> <a class="btn cinza" href="/gerenciar">⚙️ Gerenciar</a></p></div>'
+    h += '<div class="painel"><table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Skills</th><th>Candidaturas</th><th>Status</th>' + ('<th>Ações</th>' if u and u.tipo == 'admin' else '') + '</tr></thead><tbody>'
+    for cand in lista:
+        p = Perfil.query.filter_by(usuario_id=cand.id).first()
+        total = Candidatura.query.filter_by(candidato_id=cand.id).count()
         skills = (p.skills[:60] + '...') if p and p.skills and len(p.skills) > 60 else (p.skills if p else '-')
-        h += ('<tr><td><b>' + u.nome + '</b></td><td>' + u.email + '</td><td>' + (skills or '-') + '</td>'
+        acoes = ('<a class="btn cinza" href="/editar-candidato/' + str(cand.id) + '">✏️ Editar</a>') if u and u.tipo == 'admin' else ''
+        h += ('<tr><td><b>' + cand.nome + '</b></td><td>' + cand.email + '</td><td>' + (skills or '-') + '</td>'
               '<td>' + str(total) + '</td>'
-              '<td><span class="pill candidato">Ativo</span></td></tr>')
+              '<td><span class="pill ' + ('candidato' if cand.ativo else 'fechada') + '">' + ('Ativo' if cand.ativo else 'Inativo') + '</span></td>'
+              + ('<td>' + acoes + '</td>' if u and u.tipo == 'admin' else '') + '</tr>')
     h += '</tbody></table></div>'
     return pagina(h, '/candidatos')
 
 @app.route('/empresas')
 def empresas():
     lista = Usuario.query.filter_by(tipo='empresa').all()
+    u = usuario_atual()
     h = '<h1>Empresas <span>// Contratantes</span></h1>'
     h += '<p class="sub">' + str(len(lista)) + ' organizações no ecossistema</p>'
-    h += '<div class="painel"><p><a class="btn cinza" href="/cadastrar-empresa">➕ Cadastrar Empresa</a></p></div>'
+    if u and tem_permissao(u, 'cadastrar_empresa'):
+        h += '<div class="painel"><p><a class="btn cinza" href="/cadastrar-empresa">➕ Cadastrar Empresa</a></p></div>'
     h += '<div class="painel"><table class="tabela"><thead><tr><th>Razão Social</th><th>E-mail</th><th>Setor</th><th>Status</th></tr></thead><tbody>'
-    for u in lista:
-        emp = Empresa.query.filter_by(usuario_id=u.id).first()
-        h += ('<tr><td><b>' + u.nome + '</b></td><td>' + u.email + '</td><td>' + (emp.setor if emp else '-') + '</td>'
+    for usr in lista:
+        emp = Empresa.query.filter_by(usuario_id=usr.id).first()
+        h += ('<tr><td><b>' + usr.nome + '</b></td><td>' + usr.email + '</td><td>' + (emp.setor if emp else '-') + '</td>'
               '<td><span class="pill aberta">Verificada</span></td></tr>')
     h += '</tbody></table></div>'
     return pagina(h, '/empresas')
@@ -1372,9 +1560,9 @@ def analytics():
         h += '<div class="painel"><h4>Últimas Candidaturas</h4><table class="tabela"><thead><tr><th>Vaga</th><th>Candidato</th><th>Match</th><th>Etapa</th><th>Status</th></tr></thead><tbody>'
         for c in ultimas:
             v = Vaga.query.get(c.vaga_id)
-            u = Usuario.query.get(c.candidato_id)
+            usr = Usuario.query.get(c.candidato_id)
             et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
-            h += ('<tr><td>' + (v.titulo if v else '-') + '</td><td>' + (u.nome if u else '-') + '</td>'
+            h += ('<tr><td>' + (v.titulo if v else '-') + '</td><td>' + (usr.nome if usr else '-') + '</td>'
                   '<td><b style="color:#22d3ee">' + str(int(c.match_score or 0)) + '%</b></td>'
                   '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
                   '<td><span class="pill ' + c.status + '">' + c.status + '</span></td></tr>')
@@ -1462,10 +1650,11 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '8.0.0',
+        'status': 'online', 'versao': '9.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
-                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens', 'entrevistas'],
+                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens',
+                    'entrevistas', 'gerenciamento'],
         'agentes': ['sourcing', 'triagem', 'scheduling', 'followup', 'dei'],
         'trilhas': Trilha.query.count(), 'niveis': Nivel.query.count(), 'vagas': Vaga.query.count(),
         'candidaturas': Candidatura.query.count(), 'conversas': Conversa.query.count(),
@@ -1507,10 +1696,10 @@ def api_registro():
     u = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha), tipo=tipo, ativo=True)
     db.session.add(u)
     db.session.commit()
-    session['user_id'] = u.id
     if tipo == 'empresa':
         db.session.add(Empresa(usuario_id=u.id, razao_social=nome, nome_fantasia=nome))
         db.session.commit()
+    session['user_id'] = u.id
     return jsonify({'ok': True, 'msg': 'Conta criada com sucesso',
                     'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo}}), 201
 
@@ -1520,6 +1709,8 @@ def api_login():
     u = Usuario.query.filter_by(email=(d.get('email') or '').strip()).first()
     if not u or not check_password_hash(u.senha_hash, d.get('senha') or ''):
         return jsonify({'erro': 'Credenciais inválidas'}), 401
+    if not u.ativo:
+        return jsonify({'erro': 'Conta desativada. Fale com o administrador.'}), 403
     session['user_id'] = u.id
     return jsonify({'ok': True, 'msg': 'Bem-vindo(a)!',
                     'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo}})
@@ -1542,6 +1733,9 @@ def api_perfil():
 
 @app.route('/api/importar-plano', methods=['POST'])
 def api_importar_plano():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'importar_plano'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
     d = request.get_json(force=True)
     texto = (d.get('texto') or '').strip()
     if not texto:
@@ -1599,6 +1793,9 @@ def api_importar_plano():
 
 @app.route('/api/vagas/cadastrar', methods=['POST'])
 def api_cadastrar_vaga():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'cadastrar_vaga'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
     d = request.get_json(force=True)
     titulo = (d.get('titulo') or '').strip()
     empresa = (d.get('empresa') or '').strip()
@@ -1620,19 +1817,22 @@ def api_cadastrar_vaga():
 
 @app.route('/api/empresas/cadastrar', methods=['POST'])
 def api_cadastrar_empresa():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'cadastrar_empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
     d = request.get_json(force=True)
     razao = (d.get('razao_social') or '').strip()
     cnpj = (d.get('cnpj') or '').strip()
     email = (d.get('email') or '').strip()
     if not razao or not cnpj or not email:
         return jsonify({'erro': 'Preencha razão social, CNPJ e e-mail'}), 400
-    u = Usuario.query.filter_by(email=email).first()
-    if not u:
-        u = Usuario(nome=razao, email=email, senha_hash=generate_password_hash('empresa123'),
-                    tipo='empresa', ativo=True)
-        db.session.add(u)
+    usr = Usuario.query.filter_by(email=email).first()
+    if not usr:
+        usr = Usuario(nome=razao, email=email, senha_hash=generate_password_hash('empresa123'),
+                      tipo='empresa', ativo=True)
+        db.session.add(usr)
         db.session.flush()
-    emp = Empresa(usuario_id=u.id, razao_social=razao, nome_fantasia=d.get('nome_fantasia'),
+    emp = Empresa(usuario_id=usr.id, razao_social=razao, nome_fantasia=d.get('nome_fantasia'),
                   cnpj=cnpj, porte=d.get('porte'), setor=d.get('setor'),
                   descricao=d.get('descricao'), cultura=d.get('cultura'))
     db.session.add(emp)
@@ -1662,9 +1862,100 @@ def api_admin_cadastrar_candidato():
     resumo = (d.get('resumo') or '').strip()
     if skills or resumo:
         db.session.add(Perfil(usuario_id=novo.id, skills=skills or None, resumo=resumo or None))
+    for mod in MODULOS_GERENCIAVEIS:
+        db.session.add(Permissao(usuario_id=novo.id, modulo=mod,
+                                 habilitado=mod in PERMISSOES_PADRAO.get('candidato', [])))
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Candidato cadastrado com sucesso',
                     'candidato': {'id': novo.id, 'nome': novo.nome, 'email': novo.email}}), 201
+
+@app.route('/api/admin/editar-candidato', methods=['POST'])
+def api_admin_editar_candidato():
+    u = usuario_atual()
+    if not u or u.tipo != 'admin':
+        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
+    d = request.get_json(force=True)
+    cand = Usuario.query.get(d.get('usuario_id', type=int))
+    if not cand or cand.tipo != 'candidato':
+        return jsonify({'erro': 'Candidato não encontrado'}), 404
+    nome = (d.get('nome') or '').strip()
+    email = (d.get('email') or '').strip()
+    if not nome or not email:
+        return jsonify({'erro': 'Preencha nome e e-mail'}), 400
+    outro = Usuario.query.filter(Usuario.email == email, Usuario.id != cand.id).first()
+    if outro:
+        return jsonify({'erro': 'E-mail já usado por outro usuário'}), 409
+    cand.nome = nome
+    cand.email = email
+    senha = d.get('senha') or ''
+    if senha:
+        if len(senha) < 6:
+            return jsonify({'erro': 'Senha deve ter pelo menos 6 caracteres'}), 400
+        cand.senha_hash = generate_password_hash(senha)
+    cand.ativo = bool(d.get('ativo', True))
+    p = Perfil.query.filter_by(usuario_id=cand.id).first()
+    if not p:
+        p = Perfil(usuario_id=cand.id)
+        db.session.add(p)
+    p.skills = (d.get('skills') or '').strip()
+    p.resumo = (d.get('resumo') or '').strip()
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Candidato atualizado com sucesso'})
+
+@app.route('/api/admin/agendar-entrevista', methods=['POST'])
+def api_admin_agendar_entrevista():
+    u = usuario_atual()
+    if not u or u.tipo != 'admin':
+        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
+    d = request.get_json(force=True)
+    cand = Usuario.query.get(d.get('candidato_id', type=int))
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not cand or cand.tipo != 'candidato' or not v:
+        return jsonify({'erro': 'Candidato ou vaga inválidos'}), 400
+    data = (d.get('data') or '').strip()
+    hora = (d.get('hora') or '').strip()
+    try:
+        data_hora = datetime.strptime(data + ' ' + hora, '%Y-%m-%d %H:%M')
+    except Exception:
+        return jsonify({'erro': 'Data/hora inválidas'}), 400
+    emp = usuario_empresa_da_vaga(v)
+    if not emp:
+        emp = u
+    c = Candidatura.query.filter_by(vaga_id=v.id, candidato_id=cand.id).first()
+    if not c:
+        c = Candidatura(vaga_id=v.id, candidato_id=cand.id, match_score=calcular_match(v, cand),
+                        status='pendente', etapa='triagem')
+        db.session.add(c)
+        db.session.flush()
+    c.etapa = 'entrevista'
+    ent = Entrevista(vaga_id=v.id, candidato_id=cand.id, empresa_id=emp.id, data_hora=data_hora,
+                     tipo=(d.get('tipo') or 'Video'), link=(d.get('link') or '').strip(), status='agendada')
+    db.session.add(ent)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Entrevista agendada!'})
+
+@app.route('/api/admin/permissoes', methods=['POST'])
+def api_admin_permissoes():
+    u = usuario_atual()
+    if not u or u.tipo != 'admin':
+        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
+    d = request.get_json(force=True)
+    alvo = Usuario.query.get(d.get('usuario_id', type=int))
+    if not alvo or alvo.tipo == 'admin':
+        return jsonify({'erro': 'Usuário inválido'}), 400
+    perms = d.get('permissoes') or {}
+    if '_ativo' in perms:
+        alvo.ativo = bool(perms['_ativo'])
+        perms.pop('_ativo', None)
+    for mod in MODULOS_GERENCIAVEIS:
+        p = Permissao.query.filter_by(usuario_id=alvo.id, modulo=mod).first()
+        if not p:
+            p = Permissao(usuario_id=alvo.id, modulo=mod)
+            db.session.add(p)
+        if mod in perms:
+            p.habilitado = bool(perms[mod])
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Permissões salvas!'})
 
 @app.route('/api/pipeline/<int:cid>/etapa', methods=['POST'])
 def pipeline_etapa(cid):
@@ -1688,7 +1979,6 @@ def pipeline_etapa(cid):
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Candidato movido para ' + ETAPAS_INFO[etapa][0], 'etapa': etapa})
 
-# ================= ENTREVISTAS (APIS) =================
 @app.route('/api/entrevistas/cadastrar', methods=['POST'])
 def api_cadastrar_entrevista():
     u = usuario_atual()
@@ -1700,8 +1990,6 @@ def api_cadastrar_entrevista():
         return jsonify({'erro': 'Candidatura não encontrada'}), 404
     data = (d.get('data') or '').strip()
     hora = (d.get('hora') or '').strip()
-    if not data or not hora:
-        return jsonify({'erro': 'Informe data e hora'}), 400
     try:
         data_hora = datetime.strptime(data + ' ' + hora, '%Y-%m-%d %H:%M')
     except Exception:
@@ -1800,6 +2088,9 @@ def candidatar(vid):
                        tipo='candidato', ativo=True)
         db.session.add(cand)
         db.session.flush()
+        for mod in MODULOS_GERENCIAVEIS:
+            db.session.add(Permissao(usuario_id=cand.id, modulo=mod,
+                                     habilitado=mod in PERMISSOES_PADRAO.get('candidato', [])))
     else:
         cand.nome = nome
     if skills_informadas:
@@ -1831,15 +2122,16 @@ with app.app_context():
         db.session.rollback()
     criar_dados_iniciais()
     garantir_dados_demo()
+    garantir_permissoes()
 
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v8.0')
-    print('  🎥 Central de Entrevistas + Chat + Pipeline')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v9.0')
+    print('  ⚙️ Permissoes + Edicao de candidatos + Chat')
     print('=' * 56)
-    print('  🔗 Menu:          http://localhost:5000')
-    print('  🎥 Entrevistas:   http://localhost:5000/entrevistas')
+    print('  🔗 Menu:        http://localhost:5000')
+    print('  ⚙️ Gerenciar:   http://localhost:5000/gerenciar')
     print('=' * 56)
     print('  Pressione CTRL+C para parar')
     print()
