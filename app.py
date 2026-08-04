@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v4.0 — importacao de plano, match inteligente, busca."""
+"""Ecossistema de RH Inovador v5.0 — visual inovador, detalhe de vaga e ranking."""
 
 import os
 import re
@@ -186,7 +186,6 @@ def criar_dados_iniciais():
     db.session.commit()
 
 def garantir_dados_demo():
-    """Cria perfis, skills e requisitos de exemplo (idempotente — nao apaga nada)."""
     skills_demo = {
         'candidato@teste.com': 'python, flask, sql, api rest, comunicação',
         'joao@teste.com': 'javascript, react, node, ui, comunicação',
@@ -277,58 +276,66 @@ def pagina(conteudo, ativo=''):
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ecossistema RH Inovador</title><style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
-body{background:#0a1628;color:#e5eaf3;display:flex;min-height:100vh}
-aside{width:240px;background:#0d1b30;border-right:1px solid #1c2f4a;padding:20px 14px;flex-shrink:0}
-aside h2{font-size:14px;color:#3b82f6;margin-bottom:20px;letter-spacing:.5px}
-aside nav a{display:block;padding:9px 12px;border-radius:8px;color:#9fb0c8;text-decoration:none;font-size:13px;margin-bottom:3px;transition:.2s}
-aside nav a:hover{background:#16283f;color:#fff}
-aside nav a.ativo{background:#1d4ed8;color:#fff}
-main{flex:1;padding:26px 32px;overflow-y:auto}
-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
-header h1{font-size:22px}header h1 span{color:#3b82f6}
-.chip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
-.btn{background:#1d4ed8;color:#fff;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;border:none;cursor:pointer}
-.btn.cinza{background:#1e293b}.btn:hover{opacity:.9}
-.btn.verde{background:#10b981}
-.grade{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:24px}
-.card{background:linear-gradient(145deg,#0f2140,#0d1b30);border:1px solid #1c2f4a;border-radius:14px;padding:20px;transition:.25s}
-.card:hover{border-color:#3b82f6;transform:translateY(-3px)}
-.card .icone{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px}
-.card h3{font-size:15px;margin-bottom:6px}.card p{font-size:12px;color:#8fa3c0;line-height:1.5}
-.painel{background:#0d1b30;border:1px solid #1c2f4a;border-radius:14px;padding:20px 24px;margin-bottom:20px}
-.painel h4{font-size:12px;color:#8fa3c0;margin-bottom:14px;text-transform:uppercase;letter-spacing:1px}
+html,body{min-height:100%}
+body{background:#060b1a;color:#e5eaf3;display:flex;min-height:100vh;background-image:radial-gradient(900px 500px at 85% -10%,rgba(34,211,238,.10),transparent 60%),radial-gradient(800px 500px at -10% 110%,rgba(139,92,246,.10),transparent 60%);background-attachment:fixed}
+aside{width:248px;background:rgba(11,22,42,.85);border-right:1px solid rgba(59,130,246,.18);padding:22px 14px;flex-shrink:0;backdrop-filter:blur(14px);position:sticky;top:0;height:100vh;overflow-y:auto}
+aside .logo{font-size:13px;font-weight:800;letter-spacing:.6px;margin:4px 8px 22px;background:linear-gradient(90deg,#38bdf8,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+aside nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;color:#9fb0c8;text-decoration:none;font-size:13px;margin-bottom:4px;transition:.2s;border:1px solid transparent}
+aside nav a:hover{background:rgba(59,130,246,.12);color:#fff;transform:translateX(3px)}
+aside nav a.ativo{background:linear-gradient(135deg,rgba(29,78,216,.85),rgba(6,182,212,.75));color:#fff;border-color:rgba(34,211,238,.35);box-shadow:0 6px 18px rgba(6,182,212,.25)}
+main{flex:1;padding:28px 34px;overflow-y:auto}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;flex-wrap:wrap;gap:12px}
+header h1{font-size:23px;font-weight:700}
+header h1 span{background:linear-gradient(90deg,#38bdf8,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+.chip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;background:rgba(255,255,255,.04);padding:8px 14px;border-radius:20px;border:1px solid rgba(255,255,255,.08)}
+.btn{background:linear-gradient(135deg,#1d4ed8,#06b6d4);color:#fff;padding:9px 16px;border-radius:10px;text-decoration:none;font-size:13px;border:none;cursor:pointer;box-shadow:0 4px 14px rgba(6,182,212,.25);transition:.2s;display:inline-block}
+.btn:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 6px 20px rgba(6,182,212,.35)}
+.btn.cinza{background:rgba(30,41,59,.75);box-shadow:none;border:1px solid rgba(255,255,255,.08)}
+.btn.verde{background:linear-gradient(135deg,#059669,#10b981);box-shadow:0 4px 14px rgba(16,185,129,.25)}
+.grade{display:grid;grid-template-columns:repeat(auto-fit,minmax(235px,1fr));gap:18px;margin-bottom:26px}
+.card{background:rgba(13,27,48,.55);border:1px solid rgba(59,130,246,.22);border-radius:16px;padding:22px;transition:.25s;backdrop-filter:blur(10px)}
+.card:hover{border-color:rgba(34,211,238,.6);transform:translateY(-4px);box-shadow:0 14px 40px rgba(34,211,238,.14)}
+.card .icone{width:46px;height:46px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:21px;margin-bottom:13px;border:1px solid rgba(255,255,255,.08)}
+.card h3{font-size:15px;margin-bottom:6px}.card p{font-size:12px;color:#8fa3c0;line-height:1.55}
+.painel{background:rgba(13,27,48,.5);border:1px solid rgba(59,130,246,.16);border-radius:16px;padding:20px 24px;margin-bottom:20px;backdrop-filter:blur(10px)}
+.painel h4{font-size:11px;color:#7dd3fc;margin-bottom:14px;text-transform:uppercase;letter-spacing:1.2px}
 .status{display:flex;flex-wrap:wrap;gap:18px;font-size:14px}
 .item{display:flex;align-items:center;gap:9px}
-.dot{width:10px;height:10px;border-radius:50%;background:#10b981;box-shadow:0 0 8px #10b981}
-.dot.roxo{background:#a855f7;box-shadow:0 0 8px #a855f7}
-.dot.ciano{background:#22d3ee;box-shadow:0 0 8px #22d3ee}
+.dot{width:10px;height:10px;border-radius:50%;background:#10b981;box-shadow:0 0 10px #10b981}
+.dot.roxo{background:#a855f7;box-shadow:0 0 10px #a855f7}
+.dot.ciano{background:#22d3ee;box-shadow:0 0 10px #22d3ee}
 .tabela{width:100%;border-collapse:collapse;font-size:13px}
-.tabela th{text-align:left;color:#8fa3c0;padding:10px;border-bottom:1px solid #1c2f4a;text-transform:uppercase;font-size:11px;letter-spacing:.5px}
-.tabela td{padding:10px;border-bottom:1px solid #16283f}
-.tabela tr:hover td{background:#0f2140}
-.pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px}
-.pill.aberta,.pill.candidato{background:#10b98122;color:#10b981}
-.pill.fechada{background:#ef444422;color:#ef4444}
-.pill.empresa{background:#f59e0b22;color:#f59e0b}
-.pill.admin{background:#a855f722;color:#a855f7}
-.pill.pendente{background:#f59e0b22;color:#f59e0b}
+.tabela th{text-align:left;color:#7dd3fc;padding:11px;border-bottom:1px solid rgba(59,130,246,.25);text-transform:uppercase;font-size:11px;letter-spacing:.6px}
+.tabela td{padding:11px;border-bottom:1px solid rgba(255,255,255,.05)}
+.tabela tr:hover td{background:rgba(34,211,238,.06)}
+.pill{display:inline-block;padding:3px 11px;border-radius:20px;font-size:11px;border:1px solid transparent}
+.pill.aberta,.pill.candidato{background:rgba(16,185,129,.14);color:#34d399;border-color:rgba(16,185,129,.3)}
+.pill.fechada{background:rgba(239,68,68,.14);color:#f87171;border-color:rgba(239,68,68,.3)}
+.pill.empresa{background:rgba(245,158,11,.14);color:#fbbf24;border-color:rgba(245,158,11,.3)}
+.pill.admin{background:rgba(168,85,247,.14);color:#c084fc;border-color:rgba(168,85,247,.3)}
+.pill.pendente{background:rgba(245,158,11,.14);color:#fbbf24;border-color:rgba(245,158,11,.3)}
 form label{display:block;margin:12px 0 5px;font-size:13px;color:#9fb0c8}
-form input,form select,form textarea{width:100%;background:#0a1628;border:1px solid #1c2f4a;border-radius:8px;padding:10px 12px;color:#fff;font-size:14px}
-form input:focus,form select:focus,form textarea:focus{outline:none;border-color:#3b82f6}
-.mensagem{display:none;margin-top:14px;padding:12px;border-radius:8px;font-size:13px}
-.mensagem.ok{display:block;background:#10b98122;color:#10b981}
-.mensagem.erro{display:block;background:#ef444422;color:#ef4444}
-.link{color:#3b82f6;text-decoration:none}
+form input,form select,form textarea{width:100%;background:rgba(6,11,26,.7);border:1px solid rgba(59,130,246,.25);border-radius:10px;padding:11px 13px;color:#fff;font-size:14px;transition:.2s}
+form input:focus,form select:focus,form textarea:focus{outline:none;border-color:#22d3ee;box-shadow:0 0 0 3px rgba(34,211,238,.15)}
+.mensagem{display:none;margin-top:14px;padding:12px;border-radius:10px;font-size:13px}
+.mensagem.ok{display:block;background:rgba(16,185,129,.14);color:#34d399}
+.mensagem.erro{display:block;background:rgba(239,68,68,.14);color:#f87171}
+.link{color:#38bdf8;text-decoration:none}
 .sub{color:#8fa3c0;font-size:13px;margin-bottom:18px}
 .caixa-busca{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-.caixa-busca input,.caixa-busca select{width:auto;min-width:160px}
-footer{margin-top:24px;color:#475569;font-size:12px}
-@media(max-width:800px){body{flex-direction:column}aside{width:100%;border-right:none;border-bottom:1px solid #1c2f4a}main{padding:18px}}
+.caixa-busca input,.caixa-busca select{width:auto;min-width:170px}
+footer{margin-top:26px;color:#475569;font-size:12px}
+::selection{background:rgba(34,211,238,.3)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(59,130,246,.35);border-radius:10px}
+::-webkit-scrollbar-thumb:hover{background:rgba(34,211,238,.5)}
+::-webkit-scrollbar-track{background:transparent}
+@media(max-width:800px){body{flex-direction:column}aside{width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid rgba(59,130,246,.18)}main{padding:18px}}
 </style></head><body>
-<aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
+<aside><div class="logo">⚡ ECOSSISTEMA RH INOVADOR</div><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v4.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v5.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -339,6 +346,16 @@ ws.onclose=function(){setTimeout(conectarWs,3000);};}conectarWs();
                 .replace('@CHIP@', chip)
                 .replace('@CONTEUDO@', conteudo)
                 .replace('@MAX@', str(MAX_CONEXOES)))
+
+# ================= RANKING =================
+def ranking_vaga(vid):
+    cands = Candidatura.query.filter_by(vaga_id=vid).all()
+    linhas = []
+    for c in cands:
+        u = Usuario.query.get(c.candidato_id)
+        linhas.append((c, u))
+    linhas.sort(key=lambda x: x[0].match_score or 0, reverse=True)
+    return linhas
 
 # ================= AUTH (PAGINAS) =================
 @app.route('/registro')
@@ -483,12 +500,29 @@ def painel():
             h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Nível</th><th>Candidaturas</th><th>Status</th></tr></thead><tbody>'
             for v in vagas:
                 total = Candidatura.query.filter_by(vaga_id=v.id).count()
-                h += ('<tr><td><b>' + v.titulo + '</b></td><td>' + (v.nivel_codigo or '-') + '</td>'
-                      '<td><a class="link" href="/candidatos">' + str(total) + '</a></td>'
+                h += ('<tr><td><b><a class="link" href="/vaga/' + str(v.id) + '">' + v.titulo + '</a></b></td><td>' + (v.nivel_codigo or '-') + '</td>'
+                      '<td>' + str(total) + '</td>'
                       '<td><span class="pill ' + v.status + '">' + v.status + '</span></td></tr>')
             h += '</tbody></table>'
         else:
             h += '<p style="color:#8fa3c0">Nenhuma vaga publicada. <a class="link" href="/cadastrar-vaga">Publicar vaga →</a></p>'
+        h += '</div>'
+        h += '<div class="painel"><h4>🏆 Ranking de Candidatos (todas as minhas vagas)</h4>'
+        todas = []
+        for v in vagas:
+            for c in Candidatura.query.filter_by(vaga_id=v.id).all():
+                cand_u = Usuario.query.get(c.candidato_id)
+                todas.append((c, cand_u, v))
+        todas.sort(key=lambda x: x[0].match_score or 0, reverse=True)
+        if todas:
+            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Candidato</th><th>Match</th><th>Status</th></tr></thead><tbody>'
+            for c, cand_u, v in todas[:15]:
+                h += ('<tr><td>' + v.titulo + '</td><td>' + (cand_u.nome if cand_u else '-') + '</td>'
+                      '<td><b style="color:#22d3ee">' + str(int(c.match_score or 0)) + '%</b></td>'
+                      '<td><span class="pill ' + c.status + '">' + c.status + '</span></td></tr>')
+            h += '</tbody></table>'
+        else:
+            h += '<p style="color:#8fa3c0">Ainda não há candidaturas. Divulgue suas vagas!</p>'
         h += '</div>'
         h += '<div class="painel"><h4>Gestão</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> <a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
@@ -517,7 +551,7 @@ def menu():
         ('🏢', 'Empresas', 'ATS inteligente, employer branding e talent pool', '#f59e0b', '/empresas'),
         ('📊', 'Plano de Cargos e Salários', 'Níveis Júnior a Fellow, faixas e promoções', '#a855f7', '/pcs'),
         ('📡', 'Conectividade', 'Vídeo, WhatsApp, e-mail e chat em tempo real', '#22d3ee', '/conectividade'),
-        ('💼', 'Vagas', 'Oportunidades abertas com busca e match', '#ef4444', '/vagas'),
+        ('💼', 'Vagas', 'Oportunidades com busca, filtros e match', '#ef4444', '/vagas'),
         ('📈', 'Analytics', 'People analytics, KPIs e dashboards', '#f97316', '/analytics'),
         ('🎯', 'Experiência', 'Onboarding, mentoria, feedback e comunidade', '#14b8a6', '/experiencia'),
         ('🚀', 'Inovação', 'Web3, Skills DNA, VR e recrutamento assíncrono', '#8b5cf6', '/inovacao'),
@@ -614,12 +648,52 @@ def vagas():
             req_html = '<p style="color:#8fa3c0;font-size:12px;margin-top:6px">🎯 Requisitos: '
             req_html += ', '.join('<b>' + r + '</b>' for r in reqs) + '</p>'
         h += ('<div class="painel"><div class="status" style="justify-content:space-between;flex-wrap:wrap">'
-              '<div><h3>💼 ' + v.titulo + '</h3>'
+              '<div><h3>💼 <a class="link" href="/vaga/' + str(v.id) + '">' + v.titulo + '</a></h3>'
               '<p style="color:#8fa3c0;font-size:13px;margin-top:6px">' + (v.descricao or '') + '</p>'
               '<p style="color:#8fa3c0;font-size:12px;margin-top:6px">🏢 ' + (v.empresa or '-') + ' • Nível <b>' + (v.nivel_codigo or '-') + '</b> • ' + (v.regime or '-') + ' • ' + (v.localizacao or '-') + '</p>'
               + req_html + '</div>'
               '<div style="text-align:right"><span class="pill ' + v.status + '">' + v.status + '</span><br><br>'
               '<a class="btn" href="/vagas/' + str(v.id) + '/candidatar">📩 Candidatar-se</a></div></div></div>')
+    return pagina(h, '/vagas')
+
+@app.route('/vaga/<int:vid>')
+def vaga_detalhe(vid):
+    v = Vaga.query.get(vid)
+    if not v:
+        return pagina('<h1>Vaga não encontrada</h1>', '/vagas')
+    reqs = [r.skill for r in Requisito.query.filter_by(vaga_id=v.id).all()]
+    req_html = ''
+    if reqs:
+        req_html = '<p style="margin-top:8px"><span class="pill aberta">🎯 Requisitos</span> '
+        req_html += ', '.join('<b>' + r + '</b>' for r in reqs) + '</p>'
+    h = '<h1>' + v.titulo + ' <span>// Detalhes</span></h1>'
+    h += '<p class="sub">🏢 ' + (v.empresa or '-') + ' • Nível <b>' + (v.nivel_codigo or '-') + '</b> • ' + (v.regime or '-') + ' • ' + (v.localizacao or '-') + '</p>'
+    h += '<div class="painel"><h4>Sobre a vaga</h4><p style="font-size:14px;line-height:1.7">' + (v.descricao or 'Sem descrição.') + '</p>' + req_html + '</div>'
+    faixa = ''
+    if v.salario_min or v.salario_max:
+        faixa = 'Faixa: <b style="color:#22d3ee">' + texto_int(v.salario_min) + ' – ' + texto_int(v.salario_max) + '</b>'
+    h += '<div class="painel"><h4>Informações</h4><div class="status">'
+    h += '<div class="item"><span class="dot"></span> Status: <b>' + v.status + '</b></div>'
+    h += '<div class="item"><span class="dot ciano"></span> Publicada: <b>' + v.criada_em.strftime('%d/%m/%Y') + '</b></div>'
+    if faixa:
+        h += '<div class="item"><span class="dot roxo"></span> ' + faixa + '</div>'
+    h += '</div><div style="margin-top:16px"><a class="btn" href="/vagas/' + str(v.id) + '/candidatar">📩 Candidatar-se a esta vaga</a> '
+    h += '<a class="btn cinza" href="/vagas">← Voltar</a></div></div>'
+    u = usuario_atual()
+    if u and u.tipo == 'empresa':
+        linhas = ranking_vaga(v.id)
+        h += '<div class="painel"><h4>🏆 Ranking de Candidatos (Match Score)</h4>'
+        if linhas:
+            h += '<table class="tabela"><thead><tr><th>#</th><th>Candidato</th><th>Match</th><th>Status</th><th>Data</th></tr></thead><tbody>'
+            for i, (c, cand_u) in enumerate(linhas, 1):
+                h += ('<tr><td><b>' + str(i) + '</b></td><td>' + (cand_u.nome if cand_u else '-') + '</td>'
+                      '<td><b style="color:#22d3ee">' + str(int(c.match_score or 0)) + '%</b></td>'
+                      '<td><span class="pill ' + c.status + '">' + c.status + '</span></td>'
+                      '<td>' + c.criada_em.strftime('%d/%m/%Y') + '</td></tr>')
+            h += '</tbody></table>'
+        else:
+            h += '<p style="color:#8fa3c0">Nenhuma candidatura recebida ainda.</p>'
+        h += '</div>'
     return pagina(h, '/vagas')
 
 @app.route('/vagas/<int:vid>/candidatar')
@@ -792,7 +866,7 @@ def analytics():
     for cod, qtd in itens:
         pct = int(qtd / max_v * 100)
         h += '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px"><span>' + cod + '</span><b>' + str(qtd) + '</b></div>'
-        h += '<div style="background:#0a1628;border-radius:6px;height:10px;margin-top:4px"><div style="background:#3b82f6;width:' + str(pct) + '%;height:10px;border-radius:6px"></div></div></div>'
+        h += '<div style="background:rgba(6,11,26,.6);border-radius:6px;height:10px;margin-top:4px"><div style="background:linear-gradient(90deg,#1d4ed8,#22d3ee);width:' + str(pct) + '%;height:10px;border-radius:6px"></div></div></div>'
     h += '</div>'
     ultimas = Candidatura.query.order_by(Candidatura.id.desc()).limit(10).all()
     if ultimas:
@@ -887,7 +961,7 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '4.0.0',
+        'status': 'online', 'versao': '5.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
                     'recrutamento', 'analytics', 'experiencia', 'inovacao'],
@@ -1109,15 +1183,12 @@ with app.app_context():
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v4.0')
-    print('  🚀 Importacao PCS, match inteligente e busca')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v5.0')
+    print('  🎨 Visual inovador + ranking de candidatos')
     print('=' * 56)
     print('  🔗 Menu:   http://localhost:5000')
     print('  📥 Plano:  http://localhost:5000/importar-plano')
     print('=' * 56)
-    print('  Pressione CTRL+C para parar')
-    print()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
     print('  Pressione CTRL+C para parar')
     print()
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
