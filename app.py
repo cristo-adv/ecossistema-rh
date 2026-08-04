@@ -2594,6 +2594,52 @@ with app.app_context():
         db.session.rollback()
     for _v in Vaga.query.all():
         criar_etapas_padrao(_v.id)
+# ================= V11: GRUPOS E PERMISSOES (APIS) =================
+@app.route('/api/admin/grupos/permissoes', methods=['POST'])
+def api_admin_grupo_permissoes():
+    u = usuario_atual()
+    if not u or u.tipo != 'admin':
+        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
+    d = request.get_json(force=True)
+    grupo = (d.get('grupo') or '').strip()
+    if grupo not in GRUPOS:
+        return jsonify({'erro': 'Grupo inválido'}), 400
+    perms = d.get('permissoes') or {}
+    for mod in MODULOS_GERENCIAVEIS:
+        gp = GrupoPermissao.query.filter_by(grupo=grupo, modulo=mod).first()
+        if not gp:
+            gp = GrupoPermissao(grupo=grupo, modulo=mod)
+            db.session.add(gp)
+        if mod in perms:
+            gp.habilitado = bool(perms[mod])
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Permissões do grupo salvas!'})
+
+@app.route('/api/admin/usuario/grupo', methods=['POST'])
+def api_admin_usuario_grupo():
+    u = usuario_atual()
+    if not u or u.tipo != 'admin':
+        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
+    d = request.get_json(force=True)
+    alvo = Usuario.query.get(d.get('usuario_id', type=int))
+    if not alvo or alvo.tipo == 'admin':
+        return jsonify({'erro': 'Usuário inválido'}), 400
+    grupo = (d.get('grupo') or '').strip()
+    if grupo not in GRUPOS:
+        return jsonify({'erro': 'Grupo inválido'}), 400
+    alvo.grupo = grupo
+    if 'ativo' in d:
+        alvo.ativo = bool(d.get('ativo'))
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Usuário atualizado!'})
+
+# ================= V11: MIGRACAO DO CAMPO GRUPO =================
+with app.app_context():
+    try:
+        db.session.execute(text("ALTER TABLE usuario ADD COLUMN IF NOT EXISTS grupo VARCHAR(30)"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 # ================= INICIO =================
 with app.app_context():
     db.create_all()
