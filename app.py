@@ -39,9 +39,30 @@ ETAPAS_INFO = {
     'rejeitado': ('Rejeitado', '#ef4444'),
 }
 
+GRUPOS = ['candidato', 'empresa', 'analista', 'gerencia', 'diretor']
+GRUPO_LABEL = {
+    'candidato': '👤 Candidato',
+    'empresa': '🏢 Empresa',
+    'analista': '🧑‍💼 Analista',
+    'gerencia': '📊 Gerência',
+    'diretor': '👑 Diretor',
+}
 MODULOS_GERENCIAVEIS = ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
-                        'pipeline', 'entrevistas', 'cadastrar_vaga', 'cadastrar_empresa',
-                        'importar_plano', 'perfil', 'painel']
+                        'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento', 'financeiro',
+                        'cadastrar_vaga', 'cadastrar_empresa', 'importar_plano', 'perfil', 'painel']
+PERMISSOES_PADRAO = {
+    'candidato': ['vagas', 'candidatos', 'pcs', 'analytics', 'mensagens', 'perfil', 'painel'],
+    'empresa': ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
+                'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento',
+                'cadastrar_vaga', 'cadastrar_empresa', 'importar_plano', 'perfil', 'painel'],
+    'analista': ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
+                 'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento', 'financeiro',
+                 'cadastrar_vaga', 'perfil', 'painel'],
+    'gerencia': ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
+                 'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento', 'financeiro',
+                 'cadastrar_vaga', 'cadastrar_empresa', 'importar_plano', 'perfil', 'painel'],
+    'diretor': MODULOS_GERENCIAVEIS,
+}
 PERMISSOES_PADRAO = {
     'candidato': ['vagas', 'candidatos', 'pcs', 'analytics', 'mensagens', 'perfil', 'painel'],
     'empresa': MODULOS_GERENCIAVEIS,
@@ -69,116 +90,11 @@ class Permissao(db.Model):
     modulo = db.Column(db.String(50), nullable=False)
     habilitado = db.Column(db.Boolean, default=True)
 
-class Empresa(db.Model):
+class GrupoPermissao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    usuario_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    razao_social = db.Column(db.String(200))
-    nome_fantasia = db.Column(db.String(120))
-    cnpj = db.Column(db.String(20))
-    porte = db.Column(db.String(30))
-    setor = db.Column(db.String(60))
-    descricao = db.Column(db.Text)
-    cultura = db.Column(db.Text)
-
-class Trilha(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    nome = db.Column(db.String(80), nullable=False)
-    descricao = db.Column(db.String(250))
-
-class Nivel(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    trilha_id = db.Column(db.Integer, db.ForeignKey('trilha.id'))
-    codigo = db.Column(db.String(10), nullable=False)
-    nome = db.Column(db.String(60), nullable=False)
-    ordem = db.Column(db.Integer)
-    salario_min = db.Column(db.Float)
-    salario_max = db.Column(db.Float)
-    autonomia = db.Column(db.String(60))
-    impacto = db.Column(db.String(60))
-
-class Vaga(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    titulo = db.Column(db.String(150), nullable=False)
-    descricao = db.Column(db.Text)
-    empresa = db.Column(db.String(120))
-    nivel_codigo = db.Column(db.String(10))
-    status = db.Column(db.String(20), default='aberta')
-    salario_min = db.Column(db.Float)
-    salario_max = db.Column(db.Float)
-    regime = db.Column(db.String(30))
-    localizacao = db.Column(db.String(120))
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Requisito(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    skill = db.Column(db.String(100))
-
-class Candidatura(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    match_score = db.Column(db.Float, default=0.0)
-    status = db.Column(db.String(20), default='pendente')
-    etapa = db.Column(db.String(20), default='triagem')
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Conversa(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    empresa_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Mensagem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    conversa_id = db.Column(db.Integer, db.ForeignKey('conversa.id'))
-    remetente_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    texto = db.Column(db.Text, nullable=False)
-    lida = db.Column(db.Boolean, default=False)
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Entrevista(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    empresa_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    data_hora = db.Column(db.DateTime, nullable=False)
-    tipo = db.Column(db.String(30), default='Video')
-    link = db.Column(db.String(250))
-    status = db.Column(db.String(20), default='agendada')
-    nota = db.Column(db.Float)
-    comentario = db.Column(db.Text)
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-# ================= HELPERS =================
-def parse_float(s):
-    if not s:
-        return None
-    s = str(s).strip().replace('R$', '').replace(' ', '')
-    if not s:
-        return None
-    if ',' in s and '.' in s:
-        s = s.replace('.', '').replace(',', '.')
-    elif ',' in s:
-        s = s.replace(',', '.')
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-def texto_int(valor):
-    if valor is None:
-        return '-'
-    return 'R$ ' + format(int(valor), ',d').replace(',', '.')
-
-def usuario_empresa_da_vaga(v):
-    if not v:
-        return None
-    u = Usuario.query.filter_by(tipo='empresa', nome=v.empresa).first()
-    if u:
-        return u
-    return Usuario.query.filter_by(tipo='empresa').first()
+    grupo = db.Column(db.String(30), nullable=False)
+    modulo = db.Column(db.String(50), nullable=False)
+    habilitado = db.Column(db.Boolean, default=True)
 
 def tem_permissao(u, modulo):
     if not u:
@@ -187,10 +103,27 @@ def tem_permissao(u, modulo):
         return True
     if modulo not in MODULOS_GERENCIAVEIS:
         return True
-    p = Permissao.query.filter_by(usuario_id=u.id, modulo=modulo).first()
-    if p:
-        return p.habilitado
-    return modulo in PERMISSOES_PADRAO.get(u.tipo, [])
+    grupo = (u.grupo or u.tipo or 'candidato')
+    if grupo == 'admin':
+        return True
+    gp = GrupoPermissao.query.filter_by(grupo=grupo, modulo=modulo).first()
+    if gp:
+        return gp.habilitado
+    return modulo in PERMISSOES_PADRAO.get(grupo, [])
+
+def grupo_do_usuario(u):
+    return (u.grupo or u.tipo or 'candidato')
+
+def garantir_permissoes():
+    for g in GRUPOS:
+        for mod in MODULOS_GERENCIAVEIS:
+            if not GrupoPermissao.query.filter_by(grupo=g, modulo=mod).first():
+                db.session.add(GrupoPermissao(grupo=g, modulo=mod,
+                                              habilitado=mod in PERMISSOES_PADRAO.get(g, [])))
+    for u in Usuario.query.filter(Usuario.tipo != 'admin').all():
+        if not u.grupo:
+            u.grupo = u.tipo
+    db.session.commit()
 
 def contar_nao_lidas(u):
     convs = Conversa.query.filter((Conversa.candidato_id == u.id) | (Conversa.empresa_id == u.id)).all()
