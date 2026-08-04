@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v6.0 — pipeline kanban, visual inovador, ranking e cadastro."""
+"""Ecossistema de RH Inovador v7.0 — chat em tempo real, pipeline, ranking, cadastro."""
 
 import os
 import re
@@ -9,7 +9,7 @@ from functools import wraps
 
 from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -109,6 +109,21 @@ class Candidatura(db.Model):
     etapa = db.Column(db.String(20), default='triagem')
     criada_em = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Conversa(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    empresa_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Mensagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    conversa_id = db.Column(db.Integer, db.ForeignKey('conversa.id'))
+    remetente_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    texto = db.Column(db.Text, nullable=False)
+    lida = db.Column(db.Boolean, default=False)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
 # ================= HELPERS =================
 def parse_float(s):
     if not s:
@@ -129,6 +144,21 @@ def texto_int(valor):
     if valor is None:
         return '-'
     return 'R$ ' + format(int(valor), ',d').replace(',', '.')
+
+def usuario_empresa_da_vaga(v):
+    if not v:
+        return None
+    u = Usuario.query.filter_by(tipo='empresa', nome=v.empresa).first()
+    if u:
+        return u
+    return Usuario.query.filter_by(tipo='empresa').first()
+
+def contar_nao_lidas(u):
+    convs = Conversa.query.filter((Conversa.candidato_id == u.id) | (Conversa.empresa_id == u.id)).all()
+    total = 0
+    for c in convs:
+        total += Mensagem.query.filter_by(conversa_id=c.id, lida=False).filter(Mensagem.remetente_id != u.id).count()
+    return total
 
 # ================= SEED =================
 def criar_dados_iniciais():
@@ -237,6 +267,18 @@ def on_disconnect():
         conexoes_ativas -= 1
     emit('status', {'conexoes': conexoes_ativas, 'max': MAX_CONEXOES}, broadcast=True)
 
+@socketio.on('entrar_sala')
+def on_entrar_sala(data):
+    cid = data.get('conversa_id')
+    if cid:
+        join_room(str(cid))
+
+@socketio.on('sair_sala')
+def on_sair_sala(data):
+    cid = data.get('conversa_id')
+    if cid:
+        leave_room(str(cid))
+
 # ================= AUTENTICACAO =================
 def login_required(f):
     @wraps(f)
@@ -286,6 +328,9 @@ def pagina(conteudo, ativo=''):
         ('/inovacao', '🚀', 'Inovação'),
     ]
     if u:
+        nao_lidas = contar_nao_lidas(u)
+        badge = (' <span class="pill nv">' + str(nao_lidas) + '</span>') if nao_lidas else ''
+        nav.append(('/mensagens', '💬', 'Mensagens'))
         nav.append(('/perfil', '👤', 'Meu Perfil'))
         nav.append(('/importar-plano', '📥', 'Importar Plano'))
         if u.tipo in ('admin', 'empresa'):
@@ -295,7 +340,10 @@ def pagina(conteudo, ativo=''):
     itens = ''
     for href, icone, nome in nav:
         cls = ' class="ativo"' if href == ativo else ''
-        itens += '<a href="' + href + '"' + cls + '>' + icone + ' ' + nome + '</a>'
+        if 'Mensagens' in nome and badge:
+            itens += '<a href="' + href + '"' + cls + '>' + icone + ' ' + nome + badge + '</a>'
+        else:
+            itens += '<a href="' + href + '"' + cls + '>' + icone + ' ' + nome + '</a>'
     if u:
         chip = ('<div class="chip"><span class="pill ' + u.tipo + '">' + u.tipo + '</span> '
                 '<b>' + u.nome + '</b> '
@@ -344,6 +392,7 @@ header h1{font-size:22px}header h1 span{color:#22d3ee}
 .pill.admin{background:rgba(168,85,247,.14);color:#a855f7}
 .pill.pendente,.pill.triagem,.pill.proposta{background:rgba(245,158,11,.14);color:#f59e0b}
 .pill.entrevista{background:rgba(34,211,238,.14);color:#22d3ee}
+.pill.nv{background:rgba(239,68,68,.2);color:#f87171}
 form label{display:block;margin:12px 0 5px;font-size:13px;color:#9fb0c8}
 form input,form select,form textarea{width:100%;background:rgba(10,22,40,.8);border:1px solid rgba(28,47,74,.8);border-radius:8px;padding:10px 12px;color:#fff;font-size:14px}
 form input:focus,form select:focus,form textarea:focus{outline:none;border-color:#22d3ee}
@@ -363,16 +412,25 @@ form input:focus,form select:focus,form textarea:focus{outline:none;border-color
 .kcard b{font-size:13px;display:block}
 .kcard .meta{font-size:11px;color:#8fa3c0;margin-top:4px}
 .kbtns{display:flex;gap:6px;margin-top:8px}
-.kbtn{background:rgba(30,41,59,.9);color:#fff;border:1px solid rgba(59,130,246,.35);border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer}
+.kbtn{background:rgba(30,41,59,.9);color:#fff;border:1px solid rgba(59,130,246,.35);border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;text-decoration:none;display:inline-block}
 .kbtn:hover{background:#1d4ed8}
 .kbtn.verde:hover{background:#059669}
+.chatbox{max-height:380px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:6px 2px}
+.bubble{max-width:75%;padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.45}
+.bubble.minha{align-self:flex-end;background:linear-gradient(90deg,#1d4ed8,#0ea5e9);border-bottom-right-radius:4px}
+.bubble.dela{align-self:flex-start;background:rgba(30,41,59,.9);border:1px solid rgba(28,47,74,.8);border-bottom-left-radius:4px}
+.bubble .hora{display:block;font-size:10px;opacity:.7;margin-top:4px}
+.chatbar{display:flex;gap:10px;margin-top:14px}
+.chatbar input{flex:1}
+.conv{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border:1px solid rgba(28,47,74,.6);border-radius:12px;margin-bottom:10px;background:rgba(15,33,64,.4);transition:.2s}
+.conv:hover{border-color:rgba(34,211,238,.5)}
 footer{margin-top:24px;color:#475569;font-size:12px}
 @media(max-width:800px){body{flex-direction:column}aside{width:100%;border-right:none;border-bottom:1px solid rgba(28,47,74,.7)}main{padding:18px}}
 </style></head><body>
 <aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v6.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v7.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -506,6 +564,93 @@ def pagina_cadastrar_candidato():
           'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
     return pagina(h, '/candidatos')
 
+# ================= MENSAGENS (CHAT) =================
+@app.route('/mensagens')
+@login_required
+def mensagens():
+    u = usuario_atual()
+    convs = Conversa.query.filter((Conversa.candidato_id == u.id) | (Conversa.empresa_id == u.id)).order_by(Conversa.id.desc()).all()
+    h = '<h1>Mensagens <span>// ' + u.nome + '</span></h1>'
+    h += '<p class="sub">Conversas entre candidatos e empresas. Clique para abrir.</p>'
+    if not convs:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma conversa ainda. '
+        if u.tipo == 'candidato':
+            h += '<a class="link" href="/vagas">Candidatar-se a uma vaga →</a></p></div>'
+        else:
+            h += 'Quando um candidato se candidatar às suas vagas, você pode conversar com ele pelo <a class="link" href="/pipeline">Pipeline</a>.</p></div>'
+        return pagina(h, '/mensagens')
+    for c in convs:
+        v = Vaga.query.get(c.vaga_id)
+        outro_id = c.empresa_id if u.id == c.candidato_id else c.candidato_id
+        outro = Usuario.query.get(outro_id)
+        nao_lidas = Mensagem.query.filter_by(conversa_id=c.id, lida=False).filter(Mensagem.remetente_id != u.id).count()
+        badge = ' <span class="pill nv">' + str(nao_lidas) + ' novas</span>' if nao_lidas else ''
+        h += ('<a href="/mensagens/' + str(c.id) + '" style="text-decoration:none"><div class="conv">'
+              '<div><b>💬 ' + (outro.nome if outro else 'Conversa') + '</b>'
+              '<div style="color:#8fa3c0;font-size:12px">📌 ' + (v.titulo if v else 'Vaga') + ' • ' + (v.empresa if v else '') + '</div></div>'
+              '<div style="text-align:right;font-size:12px;color:#8fa3c0">abrir →' + badge + '</div></div></a>')
+    return pagina(h, '/mensagens')
+
+@app.route('/conversa/<int:vid>')
+@login_required
+def abrir_conversa(vid):
+    u = usuario_atual()
+    v = Vaga.query.get(vid)
+    if not v:
+        return pagina('<h1>Vaga não encontrada</h1>', '/vagas')
+    if u.tipo == 'candidato':
+        c = Conversa.query.filter_by(vaga_id=vid, candidato_id=u.id).first()
+        if not c:
+            emp = usuario_empresa_da_vaga(v)
+            if not emp:
+                return pagina('<h1>Sem empresa responsável</h1><p class="sub">Entre como empresa para iniciar conversas.</p>', '/vagas')
+            c = Conversa(vaga_id=vid, candidato_id=u.id, empresa_id=emp.id)
+            db.session.add(c)
+            db.session.commit()
+        return redirect(url_for('chat', cid=c.id))
+    return redirect(url_for('mensagens'))
+
+@app.route('/mensagens/<int:cid>')
+@login_required
+def chat(cid):
+    u = usuario_atual()
+    c = Conversa.query.get(cid)
+    if not c:
+        return pagina('<h1>Conversa não encontrada</h1>', '/mensagens')
+    if u.id not in (c.candidato_id, c.empresa_id) and u.tipo != 'admin':
+        return pagina('<h1>Acesso restrito</h1><p class="sub">Esta conversa não é sua.</p>', '/mensagens')
+    v = Vaga.query.get(c.vaga_id)
+    outro_id = c.empresa_id if u.id == c.candidato_id else c.candidato_id
+    outro = Usuario.query.get(outro_id)
+    # marca como lidas as mensagens do outro
+    for m in Mensagem.query.filter_by(conversa_id=cid, lida=False).filter(Mensagem.remetente_id != u.id).all():
+        m.lida = True
+    db.session.commit()
+    msgs = Mensagem.query.filter_by(conversa_id=cid).order_by(Mensagem.id).all()
+    h = '<h1>💬 ' + (outro.nome if outro else 'Conversa') + ' <span>// Chat</span></h1>'
+    h += '<p class="sub">📌 ' + (v.titulo if v else 'Vaga') + ' • ' + (v.empresa if v else '') + ' • <a class="link" href="/mensagens">← Voltar</a></p>'
+    h += '<div class="painel"><div class="chatbox" id="chat">'
+    for m in msgs:
+        cls = 'minha' if m.remetente_id == u.id else 'dela'
+        autor = Usuario.query.get(m.remetente_id)
+        hora = m.criada_em.strftime('%H:%M') if m.criada_em else ''
+        h += ('<div class="bubble ' + cls + '">' + (m.texto or '') + ''
+              '<span class="hora">' + (autor.nome.split()[0] if autor and autor.nome else '') + ' • ' + hora + '</span></div>')
+    h += '</div>'
+    h += '<div class="chatbar"><input id="texto" placeholder="Escreva sua mensagem..." onkeydown="if(event.key===\'Enter\')enviar()">'
+    h += '<button class="btn" onclick="enviar()">Enviar ➤</button></div></div>'
+    h += ('<script>var cid=' + str(cid) + ';'
+          'function enviar(){var t=document.getElementById("texto").value;if(!t.trim()){return;}'
+          'fetch("/api/conversas/' + cid + '/mensagens",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({texto:t})})'
+          '.then(function(r){return r.json();}).then(function(j){if(j.ok){document.getElementById("texto").value="";atualizar();}});}'
+          'function atualizar(){fetch("/api/conversas/' + cid + '/mensagens").then(function(r){return r.json();}).then(function(j){'
+          'var box=document.getElementById("chat");var html="";for(var i=0;i<j.mensagens.length;i++){var m=j.mensagens[i];'
+          'var cls=(m.remetente_id===' + str(u.id) + ')?"minha":"dela";'
+          'html+="<div class=\"bubble "+cls+"\">"+m.texto+"<span class=\"hora\">"+m.autor+" • "+m.hora+"</span></div>";}'
+          'box.innerHTML=html;box.scrollTop=box.scrollHeight;});}'
+          'setInterval(atualizar,3000);setTimeout(atualizar,500);</script>')
+    return pagina(h, '/mensagens')
+
 # ================= PIPELINE (KANBAN) =================
 @app.route('/pipeline')
 @gestor_required
@@ -543,6 +688,11 @@ def pipeline():
                 btns += '<button class="kbtn" onclick="mover(' + str(c.id) + ',\'' + ETAPAS[idx - 1] + '\')">◀ ' + ETAPAS_INFO[ETAPAS[idx - 1]][0] + '</button>'
             if idx < len(ETAPAS) - 1:
                 btns += '<button class="kbtn verde" onclick="mover(' + str(c.id) + ',\'' + ETAPAS[idx + 1] + '\')">' + ETAPAS_INFO[ETAPAS[idx + 1]][0] + ' ▶</button>'
+            conv = Conversa.query.filter_by(vaga_id=v.id, candidato_id=c.candidato_id).first()
+            if conv:
+                btns += '<a class="kbtn" href="/mensagens/' + str(conv.id) + '">💬</a>'
+            else:
+                btns += '<a class="kbtn" href="/conversa/' + str(v.id) + '">💬</a>'
             cor_score = '#10b981' if c.match_score >= 80 else ('#f59e0b' if c.match_score >= 65 else '#ef4444')
             h += ('<div class="kcard"><b>' + (cand.nome if cand else 'Candidato') + '</b>'
                   '<div class="meta">Match: <b style="color:' + cor_score + '">' + str(int(c.match_score or 0)) + '%</b></div>'
@@ -571,14 +721,18 @@ def painel():
         cands = Candidatura.query.filter_by(candidato_id=u.id).order_by(Candidatura.id.desc()).all()
         h += '<div class="painel"><h4>Minhas Candidaturas</h4>'
         if cands:
-            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Empresa</th><th>Match Score</th><th>Etapa</th><th>Status</th><th>Data</th></tr></thead><tbody>'
+            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Empresa</th><th>Match</th><th>Etapa</th><th>Status</th><th>Chat</th><th>Data</th></tr></thead><tbody>'
             for c in cands:
                 v = Vaga.query.get(c.vaga_id)
                 et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
+                conv = Conversa.query.filter_by(vaga_id=c.vaga_id, candidato_id=u.id).first()
+                chat_link = ('<a class="link" href="/mensagens/' + str(conv.id) + '">💬 Conversar</a>' if conv
+                             else '<a class="link" href="/conversa/' + str(c.vaga_id) + '">💬 Iniciar</a>')
                 h += ('<tr><td><b><a class="link" href="/vagas/' + str(v.id) + '">' + (v.titulo if v else 'Vaga') + '</a></b></td><td>' + (v.empresa if v else '-') + '</td>'
                       '<td><b style="color:#22d3ee">' + str(int(c.match_score)) + '%</b></td>'
                       '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
                       '<td><span class="pill ' + c.status + '">' + c.status + '</span></td>'
+                      '<td>' + chat_link + '</td>'
                       '<td>' + c.criada_em.strftime('%d/%m/%Y') + '</td></tr>')
             h += '</tbody></table>'
         else:
@@ -616,6 +770,7 @@ def painel():
         h += '<div class="painel"><h4>Gestão</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
         h += '<a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
         h += '</div></div>'
     else:
@@ -624,11 +779,13 @@ def painel():
         h += '<div class="item"><span class="dot ciano"></span> Empresas: <b>' + str(Usuario.query.filter_by(tipo='empresa').count()) + '</b></div>'
         h += '<div class="item"><span class="dot roxo"></span> Vagas: <b>' + str(Vaga.query.count()) + '</b></div>'
         h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot ciano"></span> Conversas: <b>' + str(Conversa.query.count()) + '</b></div>'
         h += '</div></div>'
         h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
         h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
         h += '<a class="btn" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> '
         h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
         h += '<a class="btn verde" href="/importar-plano">📥 Importar Plano PCS</a> '
         h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
         h += '<a class="btn cinza" href="/analytics">📈 Analytics</a>'
@@ -661,7 +818,7 @@ def menu():
     h += '<div class="item"><span class="dot"></span> Servidor Online</div>'
     h += '<div class="item"><span class="dot ciano"></span> Conexões Ativas: <b id="conn2">0/' + str(MAX_CONEXOES) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Agentes Autônomos: <b>5 ativos</b></div>'
-    h += '<div class="item"><span class="dot"></span> Módulos: <b>11</b></div>'
+    h += '<div class="item"><span class="dot"></span> Módulos: <b>12</b></div>'
     h += '</div></div>'
     h += '<script>setInterval(function(){fetch("/api/health").then(function(r){return r.json();}).then(function(d){'
     h += 'var el=document.getElementById("conn2");if(el)el.textContent=d.conexoes_ativas+"/"+d.conexoes_maximas;}).catch(function(){});},3000);</script>'
@@ -774,6 +931,8 @@ def detalhe_vaga(vid):
     h += '<div class="status">'
     h += '<a class="btn" href="/vagas/' + str(vid) + '/candidatar">📩 Candidatar-se</a>'
     u = usuario_atual()
+    if u:
+        h += '<a class="btn cinza" href="/conversa/' + str(vid) + '">💬 Falar com a empresa</a>'
     if u and u.tipo in ('admin', 'empresa'):
         h += '<a class="btn cinza" href="/vagas/' + str(vid) + '/ranking">🏆 Ver Ranking</a>'
         h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a>'
@@ -796,18 +955,22 @@ def ranking_vaga(vid):
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma candidatura nesta vaga ainda. <a class="link" href="/vagas/' + str(vid) + '">Ver vaga →</a></p></div>'
     else:
         medalhas = ['🥇', '🥈', '🥉']
-        h += '<div class="painel"><table class="tabela"><thead><tr><th>Posição</th><th>Candidato</th><th>E-mail</th><th>Match Score</th><th>Etapa</th><th>Status</th></tr></thead><tbody>'
+        h += '<div class="painel"><table class="tabela"><thead><tr><th>Posição</th><th>Candidato</th><th>E-mail</th><th>Match</th><th>Etapa</th><th>Status</th><th>Chat</th></tr></thead><tbody>'
         for i, c in enumerate(cands):
             cand = Usuario.query.get(c.candidato_id)
             pos = i + 1
             medalha = medalhas[i] if i < 3 else '<span class="medalha">' + str(pos) + 'º</span>'
             cor_score = '#10b981' if c.match_score >= 80 else ('#f59e0b' if c.match_score >= 65 else '#ef4444')
             et = c.etapa if c.etapa in ETAPAS_INFO else 'triagem'
+            conv = Conversa.query.filter_by(vaga_id=vid, candidato_id=c.candidato_id).first()
+            chat_link = ('<a class="link" href="/mensagens/' + str(conv.id) + '">💬</a>' if conv
+                         else '<a class="link" href="/conversa/' + str(vid) + '">💬</a>')
             h += ('<tr><td>' + medalha + '</td><td><b>' + (cand.nome if cand else '-') + '</b></td>'
                   '<td>' + (cand.email if cand else '-') + '</td>'
                   '<td><b style="color:' + cor_score + '">' + str(int(c.match_score)) + '%</b></td>'
                   '<td><span class="pill ' + et + '">' + ETAPAS_INFO[et][0] + '</span></td>'
-                  '<td><span class="pill ' + c.status + '">' + c.status + '</span></td></tr>')
+                  '<td><span class="pill ' + c.status + '">' + c.status + '</span></td>'
+                  '<td>' + chat_link + '</td></tr>')
         h += '</tbody></table></div>'
         melhor = cands[0]
         cand_top = Usuario.query.get(melhor.candidato_id)
@@ -967,6 +1130,7 @@ def analytics():
     total_candidaturas = Candidatura.query.count()
     total_candidatos = Usuario.query.filter_by(tipo='candidato').count()
     total_empresas = Usuario.query.filter_by(tipo='empresa').count()
+    total_conversas = Conversa.query.count()
     scores = [c.match_score or 0 for c in Candidatura.query.all()]
     score_medio = round(sum(scores) / len(scores), 1) if scores else 0
     h = '<h1>Analytics <span>// People Analytics</span></h1>'
@@ -976,6 +1140,7 @@ def analytics():
     h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(total_candidaturas) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Candidatos: <b>' + str(total_candidatos) + '</b></div>'
     h += '<div class="item"><span class="dot"></span> Empresas: <b>' + str(total_empresas) + '</b></div>'
+    h += '<div class="item"><span class="dot ciano"></span> Conversas: <b>' + str(total_conversas) + '</b></div>'
     h += '<div class="item"><span class="dot"></span> Match médio: <b>' + str(score_medio) + '%</b></div>'
     h += '</div></div>'
     por_nivel = {}
@@ -1025,7 +1190,7 @@ def conectividade():
         ('🎥', 'Videoconferência', 'Salas com até 5 participantes. WebRTC + Jitsi. Transcrição com IA.'),
         ('💬', 'WhatsApp Business', 'Chatbot de triagem, templates de convite, lembretes automáticos.'),
         ('📧', 'E-mail Corporativo', 'Templates para todo o ciclo: candidatura → oferta → onboarding.'),
-        ('💭', 'Chat em Tempo Real', 'Mensagens instantâneas, arquivos, grupos por vaga. WebSocket.'),
+        ('💭', 'Chat em Tempo Real', 'Mensagens instantâneas entre candidato e empresa por vaga. Disponível em 💬 Mensagens.'),
         ('🔔', 'Notificações Push', 'Multicanal: push, e-mail, WhatsApp. Preferências por usuário.'),
         ('📅', 'Agenda Inteligente', 'Sugestão de horários, detecção de fuso, lembretes 24h/1h.'),
     ]
@@ -1098,13 +1263,14 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '6.0.0',
+        'status': 'online', 'versao': '7.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
-                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline'],
+                    'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens'],
         'agentes': ['sourcing', 'triagem', 'scheduling', 'followup', 'dei'],
         'trilhas': Trilha.query.count(), 'niveis': Nivel.query.count(), 'vagas': Vaga.query.count(),
-        'candidaturas': Candidatura.query.count(),
+        'candidaturas': Candidatura.query.count(), 'conversas': Conversa.query.count(),
+        'mensagens': Mensagem.query.count(),
     })
 
 @app.route('/api/trilhas')
@@ -1323,6 +1489,32 @@ def pipeline_etapa(cid):
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Candidato movido para ' + ETAPAS_INFO[etapa][0], 'etapa': etapa})
 
+@app.route('/api/conversas/<int:cid>/mensagens', methods=['GET', 'POST'])
+def api_mensagens(cid):
+    u = usuario_atual()
+    if not u:
+        return jsonify({'erro': 'Faça login'}), 401
+    c = Conversa.query.get(cid)
+    if not c:
+        return jsonify({'erro': 'Conversa não encontrada'}), 404
+    if u.id not in (c.candidato_id, c.empresa_id) and u.tipo != 'admin':
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    if request.method == 'POST':
+        d = request.get_json(force=True)
+        texto = (d.get('texto') or '').strip()
+        if not texto:
+            return jsonify({'erro': 'Mensagem vazia'}), 400
+        m = Mensagem(conversa_id=cid, remetente_id=u.id, texto=texto, lida=False)
+        db.session.add(m)
+        db.session.commit()
+        return jsonify({'ok': True, 'msg': 'Enviada'})
+    msgs = Mensagem.query.filter_by(conversa_id=cid).order_by(Mensagem.id).all()
+    return jsonify({'ok': True, 'mensagens': [
+        {'id': m.id, 'texto': m.texto, 'remetente_id': m.remetente_id,
+         'autor': (Usuario.query.get(m.remetente_id).nome.split()[0] if Usuario.query.get(m.remetente_id) else ''),
+         'hora': m.criada_em.strftime('%H:%M') if m.criada_em else ''}
+        for m in msgs]})
+
 @app.route('/api/vagas/<int:vid>/candidatar', methods=['POST'])
 def candidatar(vid):
     v = Vaga.query.get(vid)
@@ -1375,11 +1567,11 @@ with app.app_context():
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v6.0')
-    print('  📋 Pipeline Kanban + visual inovador')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v7.0')
+    print('  💬 Chat em tempo real + Pipeline + Ranking')
     print('=' * 56)
-    print('  🔗 Menu:    http://localhost:5000')
-    print('  📋 Kanban:  http://localhost:5000/pipeline')
+    print('  🔗 Menu:      http://localhost:5000')
+    print('  💬 Mensagens: http://localhost:5000/mensagens')
     print('=' * 56)
     print('  Pressione CTRL+C para parar')
     print()
