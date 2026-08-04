@@ -2111,7 +2111,507 @@ def candidatar(vid):
     return jsonify({'ok': True, 'msg': 'Candidatura enviada', 'vaga': v.titulo, 'empresa': v.empresa,
                     'candidato': cand.nome, 'email': email, 'match_score': score, 'status': 'pendente',
                     'etapa': 'triagem'})
+from sqlalchemy import text
 
+# ================= V10: ETAPAS, TESTES, MONITORAMENTO E FINANCEIRO =================
+
+TIPO_FINANCA = {
+    'custo_vaga': '💰 Custo da Vaga',
+    'comissao_analista': '🧑‍💼 Comissão Analista',
+    'comissao_rh': '🤝 Comissão RH',
+    'receita': '📈 Receita do Cliente',
+    'outro': '📦 Outro',
+}
+
+class ConfigEtapa(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    nome = db.Column(db.String(80), nullable=False)
+    ordem = db.Column(db.Integer, default=1)
+    sla_dias = db.Column(db.Integer, default=3)
+    tem_teste = db.Column(db.Boolean, default=False)
+    atividades = db.Column(db.Text)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Teste(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    etapa_nome = db.Column(db.String(80))
+    nome = db.Column(db.String(120), nullable=False)
+    tipo = db.Column(db.String(30), default='tecnico')
+    nota_max = db.Column(db.Float, default=10.0)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ResultadoTeste(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    teste_id = db.Column(db.Integer, db.ForeignKey('teste.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    nota = db.Column(db.Float)
+    status = db.Column(db.String(20), default='pendente')
+    observacao = db.Column(db.Text)
+    realizado_em = db.Column(db.DateTime)
+
+class Financa(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    tipo = db.Column(db.String(30), default='custo_vaga')
+    descricao = db.Column(db.String(200))
+    valor = db.Column(db.Float, default=0.0)
+    status = db.Column(db.String(20), default='pendente')
+    nota_fiscal = db.Column(db.String(30))
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+    paga_em = db.Column(db.DateTime)
+
+MAPA_ETAPA_KANBAN = {'triagem': 'triagem', 'entrevista': 'entrevista', 'proposta': 'proposta', 'contratado': 'contratado', 'rejeitado': 'rejeitado'}
+
+def criar_etapas_padrao(vaga_id):
+    if ConfigEtapa.query.filter_by(vaga_id=vaga_id).first():
+        return
+    padrao = [
+        ('Triagem', 1, 3, False, 'Análise de currículo, perfil e fit inicial.'),
+        ('Testes', 2, 5, True, 'Aplicação de testes técnicos/comportamentais.'),
+        ('Entrevista', 3, 7, False, 'Entrevista com RH e gestor da área.'),
+        ('Proposta', 4, 5, False, 'Negociação, aprovação e envio da proposta.'),
+    ]
+    for nome, ordem, sla, teste, atv in padrao:
+        db.session.add(ConfigEtapa(vaga_id=vaga_id, nome=nome, ordem=ordem, sla_dias=sla, tem_teste=teste, atividades=atv))
+    db.session.commit()
+
+def achar_config_etapa(vaga_id, etapa_kanban):
+    nome_kanban = MAPA_ETAPA_KANBAN.get(etapa_kanban, etapa_kanban or '')
+    for ce in ConfigEtapa.query.filter_by(vaga_id=vaga_id).all():
+        if ce.nome and nome_kanban and (nome_kanban in ce.nome.lower() or ce.nome.lower() in nome_kanban):
+            return ce
+    return None
+
+def get_etapa_atualizada(cid):
+    try:
+        r = db.session.execute(text("SELECT etapa_atualizada_em FROM candidatura WHERE id=:i"), {'i': cid}).fetchone()
+        if r and r[0]:
+            return r[0]
+    except Exception:
+        pass
+    return None
+
+def dias_na_etapa(c):
+    ref = get_etapa_atualizada(c.id) or c.criada_em
+    if not ref:
+        return 0
+    return (datetime.utcnow() - ref).days
+
+# ================= V10: CONFIG DE ETAPAS =================
+@app.route('/config-etapas')
+@gestor_required
+def config_etapas():
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    if not v:
+        return pagina('<h1>Nenhuma vaga cadastrada</h1>', '/')
+    h = '<h1>🧪 Etapas e Testes <span>// ' + v.titulo + '</span></h1>'
+    h += '<p class="sub">Padronize as etapas da vaga, defina prazos (SLA), atividades e testes de cada fase.</p>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/config-etapas?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/testes?vaga=' + str(v.id) + '">📝 Testes</a>'
+    h += '<a class="btn cinza" href="/monitoramento?vaga=' + str(v.id) + '">📊 Monitoramento</a></div>'
+    etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
+    if not etapas:
+        criar_etapas_padrao(v.id)
+        etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
+    h += '<div class="painel"><h4>Etapas do Funil (prazos e metas)</h4>'
+    h += '<table class="tabela"><thead><tr><th>#</th><th>Etapa</th><th>SLA (dias)</th><th>Teste</th><th>Atividades</th><th>Ações</th></tr></thead><tbody>'
+    for e in etapas:
+        teste = '✅ Sim' if e.tem_teste else '—'
+        h += ('<tr><td>' + str(e.ordem) + '</td><td><b>' + e.nome + '</b></td>'
+              '<td><input type="number" id="sla_' + str(e.id) + '" value="' + str(e.sla_dias) + '" style="width:70px"></td>'
+              '<td>' + teste + '</td>'
+              '<td><input id="atv_' + str(e.id) + '" value="' + (e.atividades or '') + '" style="width:100%"></td>'
+              '<td><button class="kbtn" onclick="salvarEtapa(' + str(e.id) + ')">💾</button> '
+              '<button class="kbtn" onclick="removerEtapa(' + str(e.id) + ')">🗑️</button></td></tr>')
+    h += '</tbody></table>'
+    h += '<h4 style="margin-top:14px">➕ Nova etapa</h4><form id="f">'
+    h += '<div class="status" style="align-items:flex-end">'
+    h += '<div style="flex:1"><label>Nome da etapa</label><input id="nome" required placeholder="ex: Teste Prático"></div>'
+    h += '<div style="width:100px"><label>SLA (dias)</label><input id="sla" type="number" value="3"></div>'
+    h += '<div><label>Tem teste?</label><select id="tem_teste"><option value="0">Não</option><option value="1">Sim</option></select></div>'
+    h += '<div style="flex:2"><label>Atividades da fase</label><input id="atividades" placeholder="O que acontece nesta etapa?"></div>'
+    h += '<div><button class="btn" type="submit">Adicionar</button></div></div></form>'
+    h += '<div class="mensagem" id="msg"></div></div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/etapas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({vaga_id:' + str(v.id) + ',nome:document.getElementById("nome").value,'
+          'sla_dias:document.getElementById("sla").value,tem_teste:document.getElementById("tem_teste").value==="1",'
+          'atividades:document.getElementById("atividades").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Etapa adicionada! Atualizando...";setTimeout(function(){location.reload();},600);}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'function salvarEtapa(id){fetch("/api/etapas/"+id+"/atualizar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({sla_dias:document.getElementById("sla_"+id).value,atividades:document.getElementById("atv_"+id).value})})'
+          '.then(function(r){return r.json();}).then(function(j){alert(j.msg||j.erro);});}'
+          'function removerEtapa(id){if(!confirm("Remover esta etapa?")){return;}'
+          'fetch("/api/etapas/"+id+"/remover",{method:"POST"}).then(function(r){return r.json();})'
+          '.then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}</script>')
+    return pagina(h, '/config-etapas')
+
+@app.route('/api/etapas/cadastrar', methods=['POST'])
+def api_etapas_cadastrar():
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not v:
+        return jsonify({'erro': 'Vaga não encontrada'}), 404
+    nome = (d.get('nome') or '').strip()
+    if not nome:
+        return jsonify({'erro': 'Informe o nome da etapa'}), 400
+    max_ordem = db.session.query(db.func.max(ConfigEtapa.ordem)).filter_by(vaga_id=v.id).scalar() or 0
+    e = ConfigEtapa(vaga_id=v.id, nome=nome, ordem=max_ordem + 1,
+                    sla_dias=int(d.get('sla_dias') or 3),
+                    tem_teste=bool(d.get('tem_teste', False)),
+                    atividades=(d.get('atividades') or '').strip())
+    db.session.add(e)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Etapa adicionada'})
+
+@app.route('/api/etapas/<int:eid>/atualizar', methods=['POST'])
+def api_etapas_atualizar(eid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    e = ConfigEtapa.query.get(eid)
+    if not e:
+        return jsonify({'erro': 'Etapa não encontrada'}), 404
+    d = request.get_json(force=True)
+    try:
+        e.sla_dias = int(d.get('sla_dias') or e.sla_dias)
+    except Exception:
+        pass
+    e.atividades = (d.get('atividades') or '').strip() or e.atividades
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Etapa atualizada'})
+
+@app.route('/api/etapas/<int:eid>/remover', methods=['POST'])
+def api_etapas_remover(eid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    e = ConfigEtapa.query.get(eid)
+    if not e:
+        return jsonify({'erro': 'Etapa não encontrada'}), 404
+    db.session.delete(e)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Etapa removida'})
+
+# ================= V10: TESTES =================
+@app.route('/testes')
+@gestor_required
+def testes():
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    if not v:
+        return pagina('<h1>Nenhuma vaga cadastrada</h1>', '/')
+    h = '<h1>📝 Testes <span>// ' + v.titulo + '</span></h1>'
+    h += '<p class="sub">Cadastre os testes de cada fase e lance as notas dos candidatos.</p>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/testes?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/config-etapas?vaga=' + str(v.id) + '">🧪 Etapas</a>'
+    h += '<a class="btn cinza" href="/monitoramento?vaga=' + str(v.id) + '">📊 Monitoramento</a></div>'
+    h += '<div class="painel" style="max-width:640px"><h4>➕ Cadastrar teste</h4><form id="f">'
+    h += '<label>Nome do teste *</label><input id="nome" required placeholder="ex: Teste Técnico Python">'
+    h += '<label>Tipo</label><select id="tipo"><option value="tecnico">💻 Técnico</option><option value="comportamental">🧠 Comportamental</option><option value="idioma">🗣️ Idioma</option><option value="logica">🧩 Lógica</option></select>'
+    h += '<label>Etapa relacionada</label><select id="etapa_nome"><option value="">—</option>'
+    for ce in ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all():
+        h += '<option value="' + ce.nome + '">' + ce.nome + '</option>'
+    h += '</select>'
+    h += '<label>Nota máxima</label><input id="nota_max" type="number" value="10" step="0.5">'
+    h += '<div style="margin-top:12px"><button class="btn" type="submit">Cadastrar teste</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    testes_lista = Teste.query.filter_by(vaga_id=v.id).order_by(Teste.id.desc()).all()
+    candidaturas = Candidatura.query.filter_by(vaga_id=v.id).all()
+    if not testes_lista:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum teste cadastrado ainda para esta vaga.</p></div>'
+    for t in testes_lista:
+        h += '<div class="painel"><h4>📝 ' + t.nome + ' • ' + t.tipo + ' • Nota máx: ' + str(int(t.nota_max)) + '</h4>'
+        h += '<p style="color:#8fa3c0;font-size:12px;margin-bottom:10px">Etapa: ' + (t.etapa_nome or '—') + '</p>'
+        h += '<table class="tabela"><thead><tr><th>Candidato</th><th>Nota</th><th>Status</th><th>Salvar</th></tr></thead><tbody>'
+        for c in candidaturas:
+            cand = Usuario.query.get(c.candidato_id)
+            r = ResultadoTeste.query.filter_by(teste_id=t.id, candidato_id=c.candidato_id).first()
+            valor = str(int(r.nota)) if r and r.nota is not None else ''
+            if r and r.status != 'pendente':
+                status = '<span class="pill ' + r.status + '">' + r.status + '</span>'
+            else:
+                status = '<span class="pill pendente">pendente</span>'
+            h += ('<tr><td><b>' + (cand.nome if cand else '-') + '</b></td>'
+                  '<td><input id="nota_' + str(t.id) + '_' + str(c.candidato_id) + '" type="number" min="0" step="0.5" value="' + valor + '" style="width:80px"></td>'
+                  '<td>' + status + '</td>'
+                  '<td><button class="kbtn" onclick="salvarNota(' + str(t.id) + ',' + str(c.candidato_id) + ')">💾</button></td></tr>')
+        h += '</tbody></table></div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/testes/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({vaga_id:' + str(v.id) + ',nome:document.getElementById("nome").value,'
+          'tipo:document.getElementById("tipo").value,etapa_nome:document.getElementById("etapa_nome").value,'
+          'nota_max:document.getElementById("nota_max").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Teste cadastrado!";setTimeout(function(){location.reload();},600);}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'function salvarNota(tid,cid){var n=document.getElementById("nota_"+tid+"_"+cid).value;'
+          'fetch("/api/testes/resultado",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({teste_id:tid,candidato_id:cid,nota:n})})'
+          '.then(function(r){return r.json();}).then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}</script>')
+    return pagina(h, '/testes')
+
+@app.route('/api/testes/cadastrar', methods=['POST'])
+def api_teste_cadastrar():
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not v:
+        return jsonify({'erro': 'Vaga não encontrada'}), 404
+    nome = (d.get('nome') or '').strip()
+    if not nome:
+        return jsonify({'erro': 'Informe o nome do teste'}), 400
+    t = Teste(vaga_id=v.id, nome=nome, tipo=(d.get('tipo') or 'tecnico'),
+              etapa_nome=(d.get('etapa_nome') or '').strip(),
+              nota_max=parse_float(d.get('nota_max')) or 10.0)
+    db.session.add(t)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Teste cadastrado'})
+
+@app.route('/api/testes/resultado', methods=['POST'])
+def api_teste_resultado():
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    t = Teste.query.get(d.get('teste_id', type=int))
+    cand = Usuario.query.get(d.get('candidato_id', type=int))
+    if not t or not cand or cand.tipo != 'candidato':
+        return jsonify({'erro': 'Teste ou candidato inválido'}), 400
+    r = ResultadoTeste.query.filter_by(teste_id=t.id, candidato_id=cand.id).first()
+    if not r:
+        r = ResultadoTeste(teste_id=t.id, candidato_id=cand.id, vaga_id=t.vaga_id)
+        db.session.add(r)
+    nota = parse_float(d.get('nota'))
+    if nota is None:
+        r.nota = None
+        r.status = 'pendente'
+        r.realizado_em = None
+    else:
+        r.nota = nota
+        r.status = 'aprovado' if nota >= (t.nota_max or 10) * 0.7 else 'reprovado'
+        r.realizado_em = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Resultado salvo', 'status': r.status})
+
+# ================= V10: MONITORAMENTO =================
+@app.route('/monitoramento')
+@gestor_required
+def monitoramento():
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.criada_em).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    agora = datetime.utcnow()
+    h = '<h1>📊 Monitoramento <span>// Funil e prazos</span></h1>'
+    h += '<p class="sub">Controle de prazos por etapa, tempo de abertura das vagas e fatores do processo.</p>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/monitoramento?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if v and vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/config-etapas?vaga=' + str((v.id if v else 0)) + '">🧪 Etapas</a>'
+    h += '<a class="btn cinza" href="/financeiro">💰 Financeiro</a></div>'
+    h += '<div class="painel"><h4>Indicadores</h4><div class="status">'
+    h += '<div class="item"><span class="dot ciano"></span> Vagas abertas: <b>' + str(Vaga.query.filter_by(status='aberta').count()) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
+    h += '<div class="item"><span class="dot roxo"></span> Contratados: <b>' + str(Candidatura.query.filter_by(status='aprovado').count()) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
+    h += '</div></div>'
+    h += '<div class="painel"><h4>Vagas abertas por tempo (dias)</h4>'
+    h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Dias abertos</th><th>Candidaturas</th><th>Entrevistas</th><th>Status</th></tr></thead><tbody>'
+    for vg in vagas:
+        dias = (agora - vg.criada_em).days if vg.criada_em else 0
+        cor = '#10b981' if dias < 15 else ('#f59e0b' if dias < 30 else '#ef4444')
+        n_cands = Candidatura.query.filter_by(vaga_id=vg.id).count()
+        n_ents = Entrevista.query.filter_by(vaga_id=vg.id).count()
+        sel = ' style="background:rgba(15,33,64,.6)"' if v and vg.id == v.id else ''
+        h += ('<tr' + sel + '><td><b>' + vg.titulo + '</b></td>'
+              '<td><b style="color:' + cor + '">' + str(dias) + ' dias</b></td>'
+              '<td>' + str(n_cands) + '</td><td>' + str(n_ents) + '</td>'
+              '<td><span class="pill ' + vg.status + '">' + vg.status + '</span></td></tr>')
+    h += '</tbody></table></div>'
+    if v:
+        h += '<div class="painel"><h4>SLA por etapa — ' + v.titulo + '</h4>'
+        etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
+        if not etapas:
+            h += '<p style="color:#8fa3c0">Nenhuma etapa configurada. <a class="link" href="/config-etapas?vaga=' + str(v.id) + '">Configurar →</a></p>'
+        else:
+            h += '<table class="tabela"><thead><tr><th>Etapa</th><th>SLA</th><th>Candidatos</th><th>Maior tempo na etapa</th><th>Situação</th></tr></thead><tbody>'
+            for ce in etapas:
+                cands_etapa = []
+                for c in Candidatura.query.filter_by(vaga_id=v.id).all():
+                    cfg = achar_config_etapa(v.id, c.etapa)
+                    if cfg and cfg.id == ce.id:
+                        cands_etapa.append(c)
+                maior = 0
+                for c in cands_etapa:
+                    d = dias_na_etapa(c)
+                    if d > maior:
+                        maior = d
+                if cands_etapa:
+                    alerta = '<span class="pill fechada">⚠️ Acima do SLA</span>' if maior > ce.sla_dias else '<span class="pill realizada">✅ Dentro do prazo</span>'
+                else:
+                    alerta = '<span style="color:#8fa3c0;font-size:12px">sem candidatos</span>'
+                h += ('<tr><td><b>' + ce.nome + '</b></td><td>' + str(ce.sla_dias) + ' dias</td>'
+                      '<td>' + str(len(cands_etapa)) + '</td><td>' + (str(maior) + ' dias' if cands_etapa else '—') + '</td>'
+                      '<td>' + alerta + '</td></tr>')
+            h += '</tbody></table>'
+            h += '<p style="color:#8fa3c0;font-size:12px;margin-top:10px">💡 O tempo na etapa é medido desde a última movimentação no Pipeline (Passo 2 registra a data automaticamente).</p>'
+        h += '</div>'
+    return pagina(h, '/monitoramento')
+
+# ================= V10: FINANCEIRO =================
+@app.route('/financeiro')
+@gestor_required
+def financeiro():
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    h = '<h1>💰 Financeiro <span>// Custos e comissões</span></h1>'
+    h += '<p class="sub">Gestão financeira das vagas: custo, comissão do analista, comissão do RH e emissão de notas fiscais.</p>'
+    lancs = Financa.query.all()
+    if vaga_id:
+        lancs = [f for f in lancs if f.vaga_id == vaga_id]
+    total = sum(f.valor or 0 for f in lancs)
+    pendente = sum(f.valor or 0 for f in lancs if f.status in ('pendente', 'emitido'))
+    pago = sum(f.valor or 0 for f in lancs if f.status == 'pago')
+    h += '<div class="painel"><h4>Resumo</h4><div class="status">'
+    h += '<div class="item"><span class="dot ciano"></span> Lançamentos: <b>' + str(len(lancs)) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Total: <b>' + texto_int(total) + '</b></div>'
+    h += '<div class="item"><span class="dot roxo"></span> A receber: <b>' + texto_int(pendente) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Pago: <b>' + texto_int(pago) + '</b></div>'
+    h += '</div></div>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/financeiro?vaga=\'+this.value">'
+    h += '<option value="">Todas as vagas</option>'
+    for vg in vagas:
+        sel = ' selected' if vaga_id == vg.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select></div>'
+    h += '<div class="painel" style="max-width:640px"><h4>➕ Novo lançamento</h4><form id="f">'
+    h += '<label>Vaga *</label><select id="vaga_id" required><option value="">Selecione...</option>'
+    for vg in vagas:
+        h += '<option value="' + str(vg.id) + '">' + vg.titulo + '</option>'
+    h += '</select>'
+    h += '<label>Tipo *</label><select id="tipo">'
+    for k, label in TIPO_FINANCA.items():
+        h += '<option value="' + k + '">' + label + '</option>'
+    h += '</select>'
+    h += '<label>Descrição</label><input id="descricao" placeholder="ex: Comissão pela contratação do Desenvolvedor Python">'
+    h += '<label>Valor (R$) *</label><input id="valor" type="number" step="0.01" required placeholder="ex: 1500">'
+    h += '<div style="margin-top:12px"><button class="btn" type="submit">Adicionar lançamento</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    if not lancs:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum lançamento financeiro ainda.</p></div>'
+    else:
+        h += '<div class="painel"><h4>Lançamentos</h4><table class="tabela"><thead><tr><th>Vaga</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Status</th><th>NF</th><th>Ações</th></tr></thead><tbody>'
+        for f in lancs:
+            v = Vaga.query.get(f.vaga_id)
+            nf = f.nota_fiscal or '—'
+            acoes = ''
+            if f.status in ('pendente', 'emitido'):
+                acoes += '<button class="kbtn" onclick="pagar(' + str(f.id) + ')">✅ Pagar</button>'
+            if not f.nota_fiscal:
+                acoes += '<button class="kbtn" onclick="emitirNF(' + str(f.id) + ')">🧾 Emitir NF</button>'
+            h += ('<tr><td>' + (v.titulo if v else '-') + '</td><td>' + TIPO_FINANCA.get(f.tipo, f.tipo) + '</td>'
+                  '<td>' + (f.descricao or '') + '</td><td><b style="color:#22d3ee">' + texto_int(f.valor) + '</b></td>'
+                  '<td><span class="pill ' + f.status + '">' + f.status + '</span></td><td>' + nf + '</td>'
+                  '<td><div class="kbtns">' + acoes + '</div></td></tr>')
+        h += '</tbody></table></div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/financas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({vaga_id:document.getElementById("vaga_id").value,'
+          'tipo:document.getElementById("tipo").value,descricao:document.getElementById("descricao").value,'
+          'valor:document.getElementById("valor").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Lançamento adicionado!";setTimeout(function(){location.reload();},600);}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'function pagar(fid){fetch("/api/financas/"+fid+"/pagar",{method:"POST"}).then(function(r){return r.json();})'
+          '.then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}'
+          'function emitirNF(fid){fetch("/api/financas/"+fid+"/emitir-nf",{method:"POST"}).then(function(r){return r.json();})'
+          '.then(function(j){if(j.ok){alert(j.msg);location.reload();}else{alert(j.erro);}});}</script>')
+    return pagina(h, '/financeiro')
+
+@app.route('/api/financas/cadastrar', methods=['POST'])
+def api_financa_cadastrar():
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not v:
+        return jsonify({'erro': 'Selecione a vaga'}), 400
+    valor = parse_float(d.get('valor'))
+    if valor is None or valor < 0:
+        return jsonify({'erro': 'Valor inválido'}), 400
+    f = Financa(vaga_id=v.id, tipo=(d.get('tipo') or 'custo_vaga'),
+                descricao=(d.get('descricao') or '').strip(), valor=valor, status='pendente')
+    db.session.add(f)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Lançamento adicionado'})
+
+@app.route('/api/financas/<int:fid>/pagar', methods=['POST'])
+def api_financa_pagar(fid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    f = Financa.query.get(fid)
+    if not f:
+        return jsonify({'erro': 'Lançamento não encontrado'}), 404
+    f.status = 'pago'
+    f.paga_em = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Lançamento marcado como pago'})
+
+@app.route('/api/financas/<int:fid>/emitir-nf', methods=['POST'])
+def api_financa_emitir_nf(fid):
+    u = usuario_atual()
+    if not u or u.tipo not in ('admin', 'empresa'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    f = Financa.query.get(fid)
+    if not f:
+        return jsonify({'erro': 'Lançamento não encontrado'}), 404
+    if f.nota_fiscal:
+        return jsonify({'erro': 'NF já emitida: ' + f.nota_fiscal}), 400
+    ano = datetime.utcnow().year
+    seq = Financa.query.filter(Financa.nota_fiscal.isnot(None)).count() + 1
+    f.nota_fiscal = 'NF-' + str(ano) + '-' + str(seq).zfill(4)
+    f.status = 'emitido'
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'NF emitida: ' + f.nota_fiscal, 'nota_fiscal': f.nota_fiscal})
+
+# ================= V10: MIGRACAO =================
+with app.app_context():
+    db.create_all()
+    try:
+        db.session.execute(text("ALTER TABLE candidatura ADD COLUMN IF NOT EXISTS etapa_atualizada_em DATETIME"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    for _v in Vaga.query.all():
+        criar_etapas_padrao(_v.id)
 # ================= INICIO =================
 with app.app_context():
     db.create_all()
