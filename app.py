@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ecossistema de RH Inovador v9.0 — gestao de usuarios, permissoes, edicao de candidatos, chat."""
+"""Ecossistema de RH Inovador v11.0 — grupos de usuarios, permissoes ON/OFF, etapas, testes, monitoramento, financeiro, chat, pipeline."""
 
 import os
 import re
@@ -11,6 +11,7 @@ from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,33 +40,35 @@ ETAPAS_INFO = {
     'rejeitado': ('Rejeitado', '#ef4444'),
 }
 
-GRUPOS = ['candidato', 'empresa', 'analista', 'gerencia', 'diretor']
-GRUPO_LABEL = {
-    'candidato': '👤 Candidato',
+GRUPOS = {
     'empresa': '🏢 Empresa',
+    'candidato': '👤 Candidato',
     'analista': '🧑‍💼 Analista',
     'gerencia': '📊 Gerência',
-    'diretor': '👑 Diretor',
+    'diretor': '🎯 Diretor',
 }
+
 MODULOS_GERENCIAVEIS = ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
-                        'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento', 'financeiro',
+                        'pipeline', 'entrevistas', 'testes', 'monitoramento', 'financeiro',
                         'cadastrar_vaga', 'cadastrar_empresa', 'importar_plano', 'perfil', 'painel']
+
 PERMISSOES_PADRAO = {
-    'candidato': ['vagas', 'candidatos', 'pcs', 'analytics', 'mensagens', 'perfil', 'painel'],
-    'empresa': ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
-                'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento',
-                'cadastrar_vaga', 'cadastrar_empresa', 'importar_plano', 'perfil', 'painel'],
+    'candidato': ['vagas', 'candidatos', 'pcs', 'analytics', 'mensagens', 'entrevistas', 'perfil', 'painel'],
+    'empresa': MODULOS_GERENCIAVEIS,
     'analista': ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
-                 'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento', 'financeiro',
-                 'cadastrar_vaga', 'perfil', 'painel'],
+                 'pipeline', 'entrevistas', 'testes', 'monitoramento', 'perfil', 'painel'],
     'gerencia': ['vagas', 'candidatos', 'empresas', 'pcs', 'analytics', 'mensagens',
-                 'pipeline', 'entrevistas', 'testes', 'etapas', 'monitoramento', 'financeiro',
-                 'cadastrar_vaga', 'cadastrar_empresa', 'importar_plano', 'perfil', 'painel'],
+                 'pipeline', 'entrevistas', 'testes', 'monitoramento', 'financeiro',
+                 'cadastrar_vaga', 'importar_plano', 'perfil', 'painel'],
     'diretor': MODULOS_GERENCIAVEIS,
 }
-PERMISSOES_PADRAO = {
-    'candidato': ['vagas', 'candidatos', 'pcs', 'analytics', 'mensagens', 'perfil', 'painel'],
-    'empresa': MODULOS_GERENCIAVEIS,
+
+TIPO_FINANCA = {
+    'custo_vaga': '💰 Custo da Vaga',
+    'comissao_analista': '🧑‍💼 Comissão Analista',
+    'comissao_rh': '🤝 Comissão RH',
+    'receita': '📈 Receita do Cliente',
+    'outro': '📦 Outro',
 }
 
 # ================= MODELOS =================
@@ -75,6 +78,7 @@ class Usuario(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     senha_hash = db.Column(db.String(200), nullable=False)
     tipo = db.Column(db.String(20), nullable=False)
+    grupo = db.Column(db.String(20), default='candidato')
     ativo = db.Column(db.Boolean, default=True)
 
 class Perfil(db.Model):
@@ -90,11 +94,164 @@ class Permissao(db.Model):
     modulo = db.Column(db.String(50), nullable=False)
     habilitado = db.Column(db.Boolean, default=True)
 
-class GrupoPermissao(db.Model):
+class Empresa(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    grupo = db.Column(db.String(30), nullable=False)
-    modulo = db.Column(db.String(50), nullable=False)
-    habilitado = db.Column(db.Boolean, default=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    razao_social = db.Column(db.String(200))
+    nome_fantasia = db.Column(db.String(120))
+    cnpj = db.Column(db.String(20))
+    porte = db.Column(db.String(30))
+    setor = db.Column(db.String(60))
+    descricao = db.Column(db.Text)
+    cultura = db.Column(db.Text)
+
+class Trilha(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(80), nullable=False)
+    descricao = db.Column(db.String(250))
+
+class Nivel(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    trilha_id = db.Column(db.Integer, db.ForeignKey('trilha.id'))
+    codigo = db.Column(db.String(10), nullable=False)
+    nome = db.Column(db.String(60), nullable=False)
+    ordem = db.Column(db.Integer)
+    salario_min = db.Column(db.Float)
+    salario_max = db.Column(db.Float)
+    autonomia = db.Column(db.String(60))
+    impacto = db.Column(db.String(60))
+
+class Vaga(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    titulo = db.Column(db.String(150), nullable=False)
+    descricao = db.Column(db.Text)
+    empresa = db.Column(db.String(120))
+    nivel_codigo = db.Column(db.String(10))
+    status = db.Column(db.String(20), default='aberta')
+    salario_min = db.Column(db.Float)
+    salario_max = db.Column(db.Float)
+    regime = db.Column(db.String(30))
+    localizacao = db.Column(db.String(120))
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Requisito(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    skill = db.Column(db.String(100))
+
+class Candidatura(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    match_score = db.Column(db.Float, default=0.0)
+    status = db.Column(db.String(20), default='pendente')
+    etapa = db.Column(db.String(20), default='triagem')
+    etapa_atualizada_em = db.Column(db.DateTime)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Conversa(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    empresa_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Mensagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    conversa_id = db.Column(db.Integer, db.ForeignKey('conversa.id'))
+    remetente_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    texto = db.Column(db.Text, nullable=False)
+    lida = db.Column(db.Boolean, default=False)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Entrevista(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    empresa_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    data_hora = db.Column(db.DateTime, nullable=False)
+    tipo = db.Column(db.String(30), default='Video')
+    link = db.Column(db.String(250))
+    status = db.Column(db.String(20), default='agendada')
+    nota = db.Column(db.Float)
+    comentario = db.Column(db.Text)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ConfigEtapa(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    nome = db.Column(db.String(80), nullable=False)
+    ordem = db.Column(db.Integer, default=1)
+    sla_dias = db.Column(db.Integer, default=3)
+    tem_teste = db.Column(db.Boolean, default=False)
+    atividades = db.Column(db.Text)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Teste(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    etapa_nome = db.Column(db.String(80))
+    nome = db.Column(db.String(120), nullable=False)
+    tipo = db.Column(db.String(30), default='tecnico')
+    nota_max = db.Column(db.Float, default=10.0)
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ResultadoTeste(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    teste_id = db.Column(db.Integer, db.ForeignKey('teste.id'))
+    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    nota = db.Column(db.Float)
+    status = db.Column(db.String(20), default='pendente')
+    observacao = db.Column(db.Text)
+    realizado_em = db.Column(db.DateTime)
+
+class Financa(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
+    tipo = db.Column(db.String(30), default='custo_vaga')
+    descricao = db.Column(db.String(200))
+    valor = db.Column(db.Float, default=0.0)
+    status = db.Column(db.String(20), default='pendente')
+    nota_fiscal = db.Column(db.String(30))
+    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
+    paga_em = db.Column(db.DateTime)
+
+# ================= HELPERS =================
+def parse_float(s):
+    if not s:
+        return None
+    s = str(s).strip().replace('R$', '').replace(' ', '')
+    if not s:
+        return None
+    if ',' in s and '.' in s:
+        s = s.replace('.', '').replace(',', '.')
+    elif ',' in s:
+        s = s.replace(',', '.')
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def texto_int(valor):
+    if valor is None:
+        return '-'
+    return 'R$ ' + format(int(valor), ',d').replace(',', '.')
+
+def usuario_empresa_da_vaga(v):
+    if not v:
+        return None
+    u = Usuario.query.filter_by(tipo='empresa', nome=v.empresa).first()
+    if u:
+        return u
+    return Usuario.query.filter_by(tipo='empresa').first()
+
+def grupo_usuario(u):
+    if not u:
+        return 'candidato'
+    if u.tipo == 'admin':
+        return 'diretor'
+    return u.grupo or u.tipo
 
 def tem_permissao(u, modulo):
     if not u:
@@ -103,27 +260,10 @@ def tem_permissao(u, modulo):
         return True
     if modulo not in MODULOS_GERENCIAVEIS:
         return True
-    grupo = (u.grupo or u.tipo or 'candidato')
-    if grupo == 'admin':
-        return True
-    gp = GrupoPermissao.query.filter_by(grupo=grupo, modulo=modulo).first()
-    if gp:
-        return gp.habilitado
-    return modulo in PERMISSOES_PADRAO.get(grupo, [])
-
-def grupo_do_usuario(u):
-    return (u.grupo or u.tipo or 'candidato')
-
-def garantir_permissoes():
-    for g in GRUPOS:
-        for mod in MODULOS_GERENCIAVEIS:
-            if not GrupoPermissao.query.filter_by(grupo=g, modulo=mod).first():
-                db.session.add(GrupoPermissao(grupo=g, modulo=mod,
-                                              habilitado=mod in PERMISSOES_PADRAO.get(g, [])))
-    for u in Usuario.query.filter(Usuario.tipo != 'admin').all():
-        if not u.grupo:
-            u.grupo = u.tipo
-    db.session.commit()
+    p = Permissao.query.filter_by(usuario_id=u.id, modulo=modulo).first()
+    if p:
+        return p.habilitado
+    return modulo in PERMISSOES_PADRAO.get(grupo_usuario(u), [])
 
 def contar_nao_lidas(u):
     convs = Conversa.query.filter((Conversa.candidato_id == u.id) | (Conversa.empresa_id == u.id)).all()
@@ -132,20 +272,46 @@ def contar_nao_lidas(u):
         total += Mensagem.query.filter_by(conversa_id=c.id, lida=False).filter(Mensagem.remetente_id != u.id).count()
     return total
 
+def criar_etapas_padrao(vaga_id):
+    if ConfigEtapa.query.filter_by(vaga_id=vaga_id).first():
+        return
+    padrao = [
+        ('Triagem', 1, 3, False, 'Análise de currículo, perfil e fit inicial.'),
+        ('Testes', 2, 5, True, 'Aplicação de testes técnicos/comportamentais.'),
+        ('Entrevista', 3, 7, False, 'Entrevista com RH e gestor da área.'),
+        ('Proposta', 4, 5, False, 'Negociação, aprovação e envio da proposta.'),
+    ]
+    for nome, ordem, sla, teste, atv in padrao:
+        db.session.add(ConfigEtapa(vaga_id=vaga_id, nome=nome, ordem=ordem, sla_dias=sla, tem_teste=teste, atividades=atv))
+    db.session.commit()
+
+def achar_config_etapa(vaga_id, etapa_kanban):
+    nome_kanban = etapa_kanban or ''
+    for ce in ConfigEtapa.query.filter_by(vaga_id=vaga_id).all():
+        if ce.nome and nome_kanban and (nome_kanban in ce.nome.lower() or ce.nome.lower() in nome_kanban):
+            return ce
+    return None
+
+def dias_na_etapa(c):
+    ref = c.etapa_atualizada_em or c.criada_em
+    if not ref:
+        return 0
+    return (datetime.utcnow() - ref).days
+
 # ================= SEED =================
 def criar_dados_iniciais():
     if Usuario.query.first():
         return
     admin = Usuario(nome='Administrador', email='admin@rh.com',
-                    senha_hash=generate_password_hash('admin123'), tipo='admin', ativo=True)
+                    senha_hash=generate_password_hash('admin123'), tipo='admin', grupo='diretor', ativo=True)
     cand = Usuario(nome='Maria Silva', email='candidato@teste.com',
-                   senha_hash=generate_password_hash('candidato123'), tipo='candidato', ativo=True)
+                   senha_hash=generate_password_hash('candidato123'), tipo='candidato', grupo='candidato', ativo=True)
     cand2 = Usuario(nome='João Pereira', email='joao@teste.com',
-                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', ativo=True)
+                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', grupo='candidato', ativo=True)
     cand3 = Usuario(nome='Ana Souza', email='ana@teste.com',
-                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', ativo=True)
+                    senha_hash=generate_password_hash('candidato123'), tipo='candidato', grupo='candidato', ativo=True)
     emp = Usuario(nome='RH Inovador S.A.', email='empresa@teste.com',
-                  senha_hash=generate_password_hash('empresa123'), tipo='empresa', ativo=True)
+                  senha_hash=generate_password_hash('empresa123'), tipo='empresa', grupo='empresa', ativo=True)
     db.session.add_all([admin, cand, cand2, cand3, emp])
     db.session.flush()
     db.session.add(Empresa(usuario_id=emp.id, razao_social='RH Inovador S.A.',
@@ -198,7 +364,6 @@ def criar_dados_iniciais():
     db.session.commit()
 
 def garantir_dados_demo():
-    """Cria perfis, skills e requisitos de exemplo (idempotente — nao apaga nada)."""
     skills_demo = {
         'candidato@teste.com': 'python, flask, sql, api rest, comunicação',
         'joao@teste.com': 'javascript, react, node, ui, comunicação',
@@ -225,10 +390,10 @@ def garantir_dados_demo():
 
 def garantir_permissoes():
     for u in Usuario.query.filter(Usuario.tipo != 'admin').all():
+        base = PERMISSOES_PADRAO.get(grupo_usuario(u), [])
         for mod in MODULOS_GERENCIAVEIS:
             if not Permissao.query.filter_by(usuario_id=u.id, modulo=mod).first():
-                db.session.add(Permissao(usuario_id=u.id, modulo=mod,
-                                         habilitado=mod in PERMISSOES_PADRAO.get(u.tipo, [])))
+                db.session.add(Permissao(usuario_id=u.id, modulo=mod, habilitado=mod in base))
     db.session.commit()
 
 # ================= WEBSOCKET =================
@@ -277,15 +442,6 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapper
 
-def gestor_required(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        u = usuario_atual()
-        if not u or u.tipo not in ('admin', 'empresa'):
-            return redirect(url_for('login', next=request.path))
-        return f(*args, **kwargs)
-    return wrapper
-
 def usuario_atual():
     uid = session.get('user_id')
     if uid:
@@ -316,21 +472,23 @@ def pagina(conteudo, ativo=''):
             nav.append(('/perfil', '👤', 'Meu Perfil'))
         if tem_permissao(u, 'importar_plano'):
             nav.append(('/importar-plano', '📥', 'Importar Plano'))
-        if u.tipo in ('admin', 'empresa'):
-            if tem_permissao(u, 'pipeline'):
-                nav.append(('/pipeline', '📋', 'Pipeline'))
-            if tem_permissao(u, 'entrevistas'):
+        if tem_permissao(u, 'pipeline'):
+            nav.append(('/pipeline', '📋', 'Pipeline'))
+        if tem_permissao(u, 'entrevistas'):
+            if u.tipo == 'candidato':
+                nav.append(('/minhas-entrevistas', '🎥', 'Entrevistas'))
+            else:
                 nav.append(('/entrevistas', '🎥', 'Entrevistas'))
-            if u.tipo == 'admin':
-                nav.append(('/cadastrar-candidato', '👤➕', 'Cadastrar Candidato'))
-                nav.append(('/gerenciar', '⚙️', 'Gerenciar'))
-        else:
-            nav.append(('/minhas-entrevistas', '🎥', 'Entrevistas'))
-        if tem_permissao(u, 'painel'):
-                    if u.tipo in ('admin', 'empresa'):
+        if tem_permissao(u, 'testes'):
             nav.append(('/config-etapas', '🧪', 'Etapas e Testes'))
+        if tem_permissao(u, 'monitoramento'):
             nav.append(('/monitoramento', '📊', 'Monitoramento'))
+        if tem_permissao(u, 'financeiro'):
             nav.append(('/financeiro', '💰', 'Financeiro'))
+        if u.tipo == 'admin':
+            nav.append(('/cadastrar-candidato', '👤➕', 'Cadastrar Candidato'))
+            nav.append(('/gerenciar', '⚙️', 'Gerenciar'))
+        if tem_permissao(u, 'painel'):
             nav.append(('/painel', '🔑', 'Meu Painel'))
     itens = ''
     for href, icone, nome in nav:
@@ -341,6 +499,7 @@ def pagina(conteudo, ativo=''):
             itens += '<a href="' + href + '"' + cls + '>' + icone + ' ' + nome + '</a>'
     if u:
         chip = ('<div class="chip"><span class="pill ' + u.tipo + '">' + u.tipo + '</span> '
+                '<span class="pill admin">' + GRUPOS.get(grupo_usuario(u), grupo_usuario(u)) + '</span> '
                 '<b>' + u.nome + '</b> '
                 '<a class="link" href="/perfil">Perfil</a> | '
                 '<a class="link" href="/logout">Sair</a></div>')
@@ -352,7 +511,7 @@ def pagina(conteudo, ativo=''):
 <title>Ecossistema RH Inovador</title><style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
 body{background:radial-gradient(1200px 600px at 80% -10%,rgba(34,211,238,.08),transparent),radial-gradient(900px 500px at 10% 110%,rgba(168,85,247,.08),transparent),#0a1628;color:#e5eaf3;display:flex;min-height:100vh}
-aside{width:240px;background:rgba(13,27,48,.85);backdrop-filter:blur(12px);border-right:1px solid rgba(28,47,74,.7);padding:20px 14px;flex-shrink:0}
+aside{width:240px;background:rgba(13,27,48,.85);backdrop-filter:blur(12px);border-right:1px solid rgba(28,47,74,.7);padding:20px 14px;flex-shrink:0;max-height:100vh;overflow-y:auto}
 aside h2{font-size:14px;color:#22d3ee;margin-bottom:20px;letter-spacing:.5px;text-shadow:0 0 12px rgba(34,211,238,.5)}
 aside nav a{display:block;padding:9px 12px;border-radius:8px;color:#9fb0c8;text-decoration:none;font-size:13px;margin-bottom:3px;transition:.2s}
 aside nav a:hover{background:rgba(22,40,63,.8);color:#fff}
@@ -364,6 +523,7 @@ header h1{font-size:22px}header h1 span{color:#22d3ee}
 .btn{background:linear-gradient(90deg,#1d4ed8,#0ea5e9);color:#fff;padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;border:none;cursor:pointer;box-shadow:0 4px 14px rgba(29,78,216,.35)}
 .btn.cinza{background:rgba(30,41,59,.8)}.btn:hover{opacity:.92}
 .btn.verde{background:linear-gradient(90deg,#059669,#10b981)}
+.btn.roxo{background:linear-gradient(90deg,#7c3aed,#a855f7)}
 .grade{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:24px}
 .card{background:rgba(15,33,64,.5);backdrop-filter:blur(14px);border:1px solid rgba(59,130,246,.22);border-radius:14px;padding:20px;transition:.25s}
 .card:hover{border-color:rgba(34,211,238,.6);transform:translateY(-3px);box-shadow:0 8px 30px rgba(34,211,238,.15)}
@@ -381,9 +541,9 @@ header h1{font-size:22px}header h1 span{color:#22d3ee}
 .tabela td{padding:10px;border-bottom:1px solid rgba(22,40,63,.8)}
 .tabela tr:hover td{background:rgba(15,33,64,.6)}
 .pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px}
-.pill.aberta,.pill.candidato,.pill.contratado,.pill.realizada{background:rgba(16,185,129,.14);color:#10b981}
-.pill.fechada,.pill.rejeitado,.pill.cancelada{background:rgba(239,68,68,.14);color:#ef4444}
-.pill.empresa{background:rgba(245,158,11,.14);color:#f59e0b}
+.pill.aberta,.pill.candidato,.pill.contratado,.pill.realizada,.pill.aprovado,.pill.pago{background:rgba(16,185,129,.14);color:#10b981}
+.pill.fechada,.pill.rejeitado,.pill.cancelada,.pill.reprovado,.pill.inativo{background:rgba(239,68,68,.14);color:#ef4444}
+.pill.empresa,.pill.emitido{background:rgba(245,158,11,.14);color:#f59e0b}
 .pill.admin{background:rgba(168,85,247,.14);color:#a855f7}
 .pill.pendente,.pill.triagem,.pill.proposta,.pill.agendada{background:rgba(245,158,11,.14);color:#f59e0b}
 .pill.entrevista,.pill.confirmada{background:rgba(34,211,238,.14);color:#22d3ee}
@@ -420,13 +580,14 @@ form input:focus,form select:focus,form textarea:focus{outline:none;border-color
 .chatbar input{flex:1}
 .conv{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border:1px solid rgba(28,47,74,.6);border-radius:12px;margin-bottom:10px;background:rgba(15,33,64,.4);transition:.2s}
 .conv:hover{border-color:rgba(34,211,238,.5)}
+.grupo-badge{display:inline-block;padding:4px 12px;border-radius:8px;font-size:12px;background:rgba(124,58,237,.2);color:#c4b5fd;border:1px solid rgba(124,58,237,.4)}
 footer{margin-top:24px;color:#475569;font-size:12px}
 @media(max-width:800px){body{flex-direction:column}aside{width:100%;border-right:none;border-bottom:1px solid rgba(28,47,74,.7)}main{padding:18px}}
 </style></head><body>
 <aside><h2>⚡ ECOSSISTEMA RH</h2><nav>@NAV@</nav></aside>
 <main><header><h1>Ecossistema RH <span>// Inovador</span></h1>@CHIP@</header>
 @CONTEUDO@
-<footer>Ecossistema de RH Inovador v9.0 — dados permanentes | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
+<footer>Ecossistema de RH Inovador v11.0 — grupos e permissões | conexões em tempo real: <span id="conn">0/@MAX@</span></footer>
 </main>
 <script>
 function conectarWs(){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
@@ -633,84 +794,55 @@ def editar_candidato(uid):
           'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
     return pagina(h, '/editar-candidato')
 
-# ================= ADMIN: GERENCIAR PERMISSOES =================
+# ================= ADMIN: GERENCIAR (GRUPOS + PERMISSOES) =================
 @app.route('/gerenciar')
 @admin_required
 def gerenciar():
-    h = '<h1>⚙️ Gerenciamento <span>// Grupos e Usuários</span></h1>'
-    h += '<p class="sub">Configure as permissões por grupo (ON/OFF) e atribua cada usuário a um grupo.</p>'
-    h += '<div class="painel"><h4>👥 GRUPOS — permissões ON/OFF</h4>'
-    for g in GRUPOS:
-        perms = {p.modulo: p.habilitado for p in GrupoPermissao.query.filter_by(grupo=g).all()}
-        h += '<div style="border:1px solid rgba(28,47,74,.6);border-radius:12px;padding:14px;margin-bottom:12px">'
-        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
-        h += '<b>' + GRUPO_LABEL.get(g, g) + '</b>'
-        h += '<button class="btn verde" onclick="salvarGrupo(\'' + g + '\')">💾 Salvar ' + g + '</button></div>'
-        h += '<div class="status" id="mods_g_' + g + '">'
-        for mod in MODULOS_GERENCIAVEIS:
-            checked = ' checked' if perms.get(mod, mod in PERMISSOES_PADRAO.get(g, [])) else ''
-            h += ('<label style="font-size:12px;display:flex;align-items:center;gap:4px;background:rgba(15,33,64,.5);'
-                  'padding:4px 8px;border-radius:6px"><input type="checkbox" data-mod="' + mod + '"' + checked + ' style="width:auto"> '
-                  + mod.replace('_', ' ').title() + '</label>')
-        h += '</div><div class="mensagem" id="msg_g_' + g + '"></div></div>'
-    h += '</div>'
     usuarios = Usuario.query.filter(Usuario.tipo != 'admin').order_by(Usuario.tipo, Usuario.nome).all()
-    h += '<div class="painel"><h4>🙋 USUÁRIOS — grupo e status</h4>'
+    h = '<h1>⚙️ Gerenciamento <span>// Grupos e Permissões</span></h1>'
+    h += '<p class="sub">Escolha o grupo de cada usuário e ligue/desligue (ON/OFF) o que ele pode ver e alterar. O administrador tem acesso total.</p>'
     if not usuarios:
-        h += '<p style="color:#8fa3c0">Nenhum usuário cadastrado ainda.</p>'
-    else:
-        h += '<table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Grupo</th><th>Ativo</th><th>Salvar</th></tr></thead><tbody>'
-        for alvo in usuarios:
-            h += ('<tr><td><b>' + alvo.nome + '</b><br><span style="color:#8fa3c0;font-size:11px">' + alvo.email + '</span></td>'
-                  '<td><select id="grupo_' + str(alvo.id) + '">')
-            for g in GRUPOS:
-                sel = ' selected' if grupo_do_usuario(alvo) == g else ''
-                h += '<option value="' + g + '"' + sel + '>' + GRUPO_LABEL.get(g, g) + '</option>'
-            h += '</select></td>'
-            h += '<td><input type="checkbox" id="ativo_' + str(alvo.id) + '" ' + ('checked' if alvo.ativo else '') + ' style="width:auto"></td>'
-            h += '<td><button class="btn cinza" onclick="salvarUsuario(' + str(alvo.id) + ')">💾</button></td></tr>'
-        h += '</tbody></table>'
-    h += '</div>'
-    h += ('<script>'
-          'function salvarGrupo(g){var mods={};'
-          'document.querySelectorAll("#mods_g_"+g+" input[data-mod]").forEach(function(cb){mods[cb.getAttribute("data-mod")]=cb.checked;});'
-          'fetch("/api/admin/grupos/permissoes",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({grupo:g,permissoes:mods})})'
-          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
-          '.then(function(res){var m=document.getElementById("msg_g_"+g);if(res.ok){m.className="mensagem ok";'
-          'm.innerHTML="✅ Permissões do grupo salvas!";}'
-          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});}'
-          'function salvarUsuario(uid){'
-          'fetch("/api/admin/usuario/grupo",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({usuario_id:uid,grupo:document.getElementById("grupo_"+uid).value,'
-          'ativo:document.getElementById("ativo_"+uid).checked})})'
-          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
-          '.then(function(res){if(res.ok){alert("✅ Usuário atualizado!");}else{alert("❌ "+(res.j.erro||"Erro"));}});}</script>')
-    return pagina(h, '/gerenciar')
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum usuário além do admin cadastrado.</p></div>'
+        return pagina(h, '/gerenciar')
     for alvo in usuarios:
         perms = {p.modulo: p.habilitado for p in Permissao.query.filter_by(usuario_id=alvo.id).all()}
+        grp = grupo_usuario(alvo)
         h += '<div class="painel">'
         h += '<div class="status" style="justify-content:space-between;align-items:center;margin-bottom:12px">'
-        h += '<div><b>' + alvo.nome + '</b> <span class="pill ' + alvo.tipo + '">' + alvo.tipo + '</span><br>'
+        h += '<div><b>' + alvo.nome + '</b> <span class="pill ' + alvo.tipo + '">' + alvo.tipo + '</span> '
+        h += '<span class="grupo-badge" id="grupob_' + str(alvo.id) + '">' + GRUPOS.get(grp, grp) + '</span><br>'
         h += '<span style="color:#8fa3c0;font-size:12px">' + alvo.email + '</span></div>'
         h += '<div class="status"><label style="font-size:12px"><input type="checkbox" id="ativo_' + str(alvo.id) + '" ' + ('checked' if alvo.ativo else '') + ' style="width:auto"> Ativo</label>'
         if alvo.tipo == 'candidato':
             h += ' <a class="btn cinza" href="/editar-candidato/' + str(alvo.id) + '">✏️ Editar</a>'
         h += '</div></div>'
+        h += '<div class="status" style="align-items:flex-end;margin-bottom:12px">'
+        h += '<div><label>Grupo do usuário</label><select id="grupo_' + str(alvo.id) + '" onchange="aplicarGrupo(' + str(alvo.id) + ')">'
+        for g, label in GRUPOS.items():
+            sel = ' selected' if g == grp else ''
+            h += '<option value="' + g + '"' + sel + '>' + label + '</option>'
+        h += '</select></div>'
+        h += '<button class="btn roxo" onclick="salvarPerm(' + str(alvo.id) + ')">💾 Salvar ' + alvo.nome.split()[0] + '</button>'
+        h += '</div>'
         h += '<div class="status" id="mods_' + str(alvo.id) + '">'
         for mod in MODULOS_GERENCIAVEIS:
-            checked = ' checked' if perms.get(mod, mod in PERMISSOES_PADRAO.get(alvo.tipo, [])) else ''
+            checked = ' checked' if perms.get(mod, mod in PERMISSOES_PADRAO.get(grp, [])) else ''
             h += ('<label style="font-size:12px;display:flex;align-items:center;gap:4px;background:rgba(15,33,64,.5);'
                   'padding:4px 8px;border-radius:6px"><input type="checkbox" data-mod="' + mod + '"' + checked + ' style="width:auto"> '
                   + mod.replace('_', ' ').title() + '</label>')
         h += '</div>'
-        h += '<button class="btn verde" style="margin-top:12px" onclick="salvarPerm(' + str(alvo.id) + ')">💾 Salvar permissões de ' + alvo.nome.split()[0] + '</button>'
         h += '<div class="mensagem" id="msg_' + str(alvo.id) + '"></div></div>'
-    h += ('<script>function salvarPerm(uid){var mods={};'
+    h += ('<script>'
+          'var GRUPO_DEFS={' + ''.join('"' + g + '":["' + '","'.join(PERMISSOES_PADRAO[g]) + '"],' for g in GRUPOS) + '};'
+          'function aplicarGrupo(uid){var g=document.getElementById("grupo_"+uid).value;'
+          'document.getElementById("grupob_"+uid).textContent=' + '"' + '",'.join([]) + '"".trim()' + '||g;'
+          'document.querySelectorAll("#mods_"+uid+" input[data-mod]").forEach(function(cb){'
+          'cb.checked=GRUPO_DEFS[g].indexOf(cb.getAttribute("data-mod"))>=0;});}'
+          'function salvarPerm(uid){var mods={};'
           'document.querySelectorAll("#mods_"+uid+" input[data-mod]").forEach(function(cb){mods[cb.getAttribute("data-mod")]=cb.checked;});'
           'mods["_ativo"]=document.getElementById("ativo_"+uid)?document.getElementById("ativo_"+uid).checked:true;'
           'fetch("/api/admin/permissoes",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({usuario_id:uid,permissoes:mods})})'
+          'body:JSON.stringify({usuario_id:uid,grupo:document.getElementById("grupo_"+uid).value,permissoes:mods})})'
           '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
           '.then(function(res){var m=document.getElementById("msg_"+uid);if(res.ok){m.className="mensagem ok";'
           'm.innerHTML="✅ Permissões salvas!";}'
@@ -719,14 +851,17 @@ def gerenciar():
 
 # ================= CENTRAL DE ENTREVISTAS =================
 @app.route('/entrevistas')
-@gestor_required
+@login_required
 def entrevistas():
+    u = usuario_atual()
+    if not tem_permissao(u, 'entrevistas') or u.tipo == 'candidato':
+        return redirect(url_for('minhas_entrevistas') if u.tipo == 'candidato' else url_for('painel'))
     vaga_id = request.args.get('vaga', type=int)
     vagas = Vaga.query.order_by(Vaga.id.desc()).all()
     v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
     h = '<h1>Central de Entrevistas <span>// 🎥</span></h1>'
     h += '<p class="sub">Agende, confirme e avalie entrevistas de cada vaga.</p>'
-    if not vagas:
+    if not vagas or not v:
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma vaga cadastrada.</p></div>'
         return pagina(h, '/entrevistas')
     h += '<div class="caixa-busca"><select id="selvaga" onchange="location.href=\'/entrevistas?vaga=\'+this.value">'
@@ -763,8 +898,11 @@ def entrevistas():
     return pagina(h, '/entrevistas')
 
 @app.route('/entrevista/<int:eid>/avaliar')
-@gestor_required
+@login_required
 def avaliar_entrevista(eid):
+    u = usuario_atual()
+    if not tem_permissao(u, 'entrevistas') or u.tipo == 'candidato':
+        return redirect(url_for('painel'))
     e = Entrevista.query.get(eid)
     if not e:
         return pagina('<h1>Entrevista não encontrada</h1>', '/entrevistas')
@@ -924,14 +1062,17 @@ def chat(cid):
 
 # ================= PIPELINE (KANBAN) =================
 @app.route('/pipeline')
-@gestor_required
+@login_required
 def pipeline():
+    u = usuario_atual()
+    if not tem_permissao(u, 'pipeline'):
+        return redirect(url_for('painel'))
     vaga_id = request.args.get('vaga', type=int)
     vagas = Vaga.query.order_by(Vaga.id.desc()).all()
     v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
     h = '<h1>Pipeline de Recrutamento <span>// Kanban</span></h1>'
     h += '<p class="sub">Acompanhe cada candidato na jornada: Triagem → Entrevista → Proposta → Contratado.</p>'
-    if not vagas:
+    if not vagas or not v:
         h += '<div class="painel"><p style="color:#8fa3c0">Nenhuma vaga cadastrada. <a class="link" href="/cadastrar-vaga">Publicar uma vaga →</a></p></div>'
         return pagina(h, '/pipeline')
     h += '<div class="caixa-busca"><select id="selvaga" onchange="location.href=\'/pipeline?vaga=\'+this.value">'
@@ -978,8 +1119,11 @@ def pipeline():
     return pagina(h, '/pipeline')
 
 @app.route('/agendar-entrevista')
-@gestor_required
+@login_required
 def agendar_entrevista():
+    u = usuario_atual()
+    if not tem_permissao(u, 'entrevistas') or u.tipo == 'candidato':
+        return redirect(url_for('painel'))
     c = Candidatura.query.get(request.args.get('candidatura', type=int))
     if not c:
         return pagina('<h1>Candidatura não encontrada</h1>', '/pipeline')
@@ -1005,6 +1149,276 @@ def agendar_entrevista():
           'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};</script>')
     return pagina(h, '/entrevistas')
 
+# ================= ETAPAS E TESTES =================
+@app.route('/config-etapas')
+@login_required
+def config_etapas():
+    u = usuario_atual()
+    if not tem_permissao(u, 'testes'):
+        return redirect(url_for('painel'))
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    if not v:
+        return pagina('<h1>Nenhuma vaga cadastrada</h1>', '/')
+    h = '<h1>🧪 Etapas e Testes <span>// ' + v.titulo + '</span></h1>'
+    h += '<p class="sub">Padronize as etapas da vaga, defina prazos (SLA), atividades e testes de cada fase.</p>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/config-etapas?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/testes?vaga=' + str(v.id) + '">📝 Testes</a>'
+    h += '<a class="btn cinza" href="/monitoramento?vaga=' + str(v.id) + '">📊 Monitoramento</a></div>'
+    etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
+    if not etapas:
+        criar_etapas_padrao(v.id)
+        etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
+    h += '<div class="painel"><h4>Etapas do Funil (prazos e metas)</h4>'
+    h += '<table class="tabela"><thead><tr><th>#</th><th>Etapa</th><th>SLA (dias)</th><th>Teste</th><th>Atividades</th><th>Ações</th></tr></thead><tbody>'
+    for e in etapas:
+        teste = '✅ Sim' if e.tem_teste else '—'
+        h += ('<tr><td>' + str(e.ordem) + '</td><td><b>' + e.nome + '</b></td>'
+              '<td><input type="number" id="sla_' + str(e.id) + '" value="' + str(e.sla_dias) + '" style="width:70px"></td>'
+              '<td>' + teste + '</td>'
+              '<td><input id="atv_' + str(e.id) + '" value="' + (e.atividades or '') + '" style="width:100%"></td>'
+              '<td><button class="kbtn" onclick="salvarEtapa(' + str(e.id) + ')">💾</button> '
+              '<button class="kbtn" onclick="removerEtapa(' + str(e.id) + ')">🗑️</button></td></tr>')
+    h += '</tbody></table>'
+    h += '<h4 style="margin-top:14px">➕ Nova etapa</h4><form id="f">'
+    h += '<div class="status" style="align-items:flex-end">'
+    h += '<div style="flex:1"><label>Nome da etapa</label><input id="nome" required placeholder="ex: Teste Prático"></div>'
+    h += '<div style="width:100px"><label>SLA (dias)</label><input id="sla" type="number" value="3"></div>'
+    h += '<div><label>Tem teste?</label><select id="tem_teste"><option value="0">Não</option><option value="1">Sim</option></select></div>'
+    h += '<div style="flex:2"><label>Atividades da fase</label><input id="atividades" placeholder="O que acontece nesta etapa?"></div>'
+    h += '<div><button class="btn" type="submit">Adicionar</button></div></div></form>'
+    h += '<div class="mensagem" id="msg"></div></div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/etapas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({vaga_id:' + str(v.id) + ',nome:document.getElementById("nome").value,'
+          'sla_dias:document.getElementById("sla").value,tem_teste:document.getElementById("tem_teste").value==="1",'
+          'atividades:document.getElementById("atividades").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Etapa adicionada! Atualizando...";setTimeout(function(){location.reload();},600);}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'function salvarEtapa(id){fetch("/api/etapas/"+id+"/atualizar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({sla_dias:document.getElementById("sla_"+id).value,atividades:document.getElementById("atv_"+id).value})})'
+          '.then(function(r){return r.json();}).then(function(j){alert(j.msg||j.erro);});}'
+          'function removerEtapa(id){if(!confirm("Remover esta etapa?")){return;}'
+          'fetch("/api/etapas/"+id+"/remover",{method:"POST"}).then(function(r){return r.json();})'
+          '.then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}</script>')
+    return pagina(h, '/config-etapas')
+
+@app.route('/testes')
+@login_required
+def testes():
+    u = usuario_atual()
+    if not tem_permissao(u, 'testes'):
+        return redirect(url_for('painel'))
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    if not v:
+        return pagina('<h1>Nenhuma vaga cadastrada</h1>', '/')
+    h = '<h1>📝 Testes <span>// ' + v.titulo + '</span></h1>'
+    h += '<p class="sub">Cadastre os testes de cada fase e lance as notas dos candidatos.</p>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/testes?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/config-etapas?vaga=' + str(v.id) + '">🧪 Etapas</a>'
+    h += '<a class="btn cinza" href="/monitoramento?vaga=' + str(v.id) + '">📊 Monitoramento</a></div>'
+    h += '<div class="painel" style="max-width:640px"><h4>➕ Cadastrar teste</h4><form id="f">'
+    h += '<label>Nome do teste *</label><input id="nome" required placeholder="ex: Teste Técnico Python">'
+    h += '<label>Tipo</label><select id="tipo"><option value="tecnico">💻 Técnico</option><option value="comportamental">🧠 Comportamental</option><option value="idioma">🗣️ Idioma</option><option value="logica">🧩 Lógica</option></select>'
+    h += '<label>Etapa relacionada</label><select id="etapa_nome"><option value="">—</option>'
+    for ce in ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all():
+        h += '<option value="' + ce.nome + '">' + ce.nome + '</option>'
+    h += '</select>'
+    h += '<label>Nota máxima</label><input id="nota_max" type="number" value="10" step="0.5">'
+    h += '<div style="margin-top:12px"><button class="btn" type="submit">Cadastrar teste</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    testes_lista = Teste.query.filter_by(vaga_id=v.id).order_by(Teste.id.desc()).all()
+    candidaturas = Candidatura.query.filter_by(vaga_id=v.id).all()
+    if not testes_lista:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum teste cadastrado ainda para esta vaga.</p></div>'
+    for t in testes_lista:
+        h += '<div class="painel"><h4>📝 ' + t.nome + ' • ' + t.tipo + ' • Nota máx: ' + str(int(t.nota_max)) + '</h4>'
+        h += '<p style="color:#8fa3c0;font-size:12px;margin-bottom:10px">Etapa: ' + (t.etapa_nome or '—') + '</p>'
+        h += '<table class="tabela"><thead><tr><th>Candidato</th><th>Nota</th><th>Status</th><th>Salvar</th></tr></thead><tbody>'
+        for c in candidaturas:
+            cand = Usuario.query.get(c.candidato_id)
+            r = ResultadoTeste.query.filter_by(teste_id=t.id, candidato_id=c.candidato_id).first()
+            valor = str(int(r.nota)) if r and r.nota is not None else ''
+            if r and r.status != 'pendente':
+                status = '<span class="pill ' + r.status + '">' + r.status + '</span>'
+            else:
+                status = '<span class="pill pendente">pendente</span>'
+            h += ('<tr><td><b>' + (cand.nome if cand else '-') + '</b></td>'
+                  '<td><input id="nota_' + str(t.id) + '_' + str(c.candidato_id) + '" type="number" min="0" step="0.5" value="' + valor + '" style="width:80px"></td>'
+                  '<td>' + status + '</td>'
+                  '<td><button class="kbtn" onclick="salvarNota(' + str(t.id) + ',' + str(c.candidato_id) + ')">💾</button></td></tr>')
+        h += '</tbody></table></div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/testes/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({vaga_id:' + str(v.id) + ',nome:document.getElementById("nome").value,'
+          'tipo:document.getElementById("tipo").value,etapa_nome:document.getElementById("etapa_nome").value,'
+          'nota_max:document.getElementById("nota_max").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Teste cadastrado!";setTimeout(function(){location.reload();},600);}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'function salvarNota(tid,cid){var n=document.getElementById("nota_"+tid+"_"+cid).value;'
+          'fetch("/api/testes/resultado",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({teste_id:tid,candidato_id:cid,nota:n})})'
+          '.then(function(r){return r.json();}).then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}</script>')
+    return pagina(h, '/testes')
+
+# ================= MONITORAMENTO =================
+@app.route('/monitoramento')
+@login_required
+def monitoramento():
+    u = usuario_atual()
+    if not tem_permissao(u, 'monitoramento'):
+        return redirect(url_for('painel'))
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.criada_em).all()
+    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
+    agora = datetime.utcnow()
+    h = '<h1>📊 Monitoramento <span>// Funil e prazos</span></h1>'
+    h += '<p class="sub">Controle de prazos por etapa, tempo de abertura das vagas e fatores do processo.</p>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/monitoramento?vaga=\'+this.value">'
+    for vg in vagas:
+        sel = ' selected' if v and vg.id == v.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select><a class="btn cinza" href="/config-etapas?vaga=' + str((v.id if v else 0)) + '">🧪 Etapas</a>'
+    h += '<a class="btn cinza" href="/financeiro">💰 Financeiro</a></div>'
+    h += '<div class="painel"><h4>Indicadores</h4><div class="status">'
+    h += '<div class="item"><span class="dot ciano"></span> Vagas abertas: <b>' + str(Vaga.query.filter_by(status='aberta').count()) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
+    h += '<div class="item"><span class="dot roxo"></span> Contratados: <b>' + str(Candidatura.query.filter_by(status='aprovado').count()) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
+    h += '</div></div>'
+    h += '<div class="painel"><h4>Vagas abertas por tempo (dias)</h4>'
+    h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Dias abertos</th><th>Candidaturas</th><th>Entrevistas</th><th>Status</th></tr></thead><tbody>'
+    for vg in vagas:
+        dias = (agora - vg.criada_em).days if vg.criada_em else 0
+        cor = '#10b981' if dias < 15 else ('#f59e0b' if dias < 30 else '#ef4444')
+        n_cands = Candidatura.query.filter_by(vaga_id=vg.id).count()
+        n_ents = Entrevista.query.filter_by(vaga_id=vg.id).count()
+        sel = ' style="background:rgba(15,33,64,.6)"' if v and vg.id == v.id else ''
+        h += ('<tr' + sel + '><td><b>' + vg.titulo + '</b></td>'
+              '<td><b style="color:' + cor + '">' + str(dias) + ' dias</b></td>'
+              '<td>' + str(n_cands) + '</td><td>' + str(n_ents) + '</td>'
+              '<td><span class="pill ' + vg.status + '">' + vg.status + '</span></td></tr>')
+    h += '</tbody></table></div>'
+    if v:
+        h += '<div class="painel"><h4>SLA por etapa — ' + v.titulo + '</h4>'
+        etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
+        if not etapas:
+            h += '<p style="color:#8fa3c0">Nenhuma etapa configurada. <a class="link" href="/config-etapas?vaga=' + str(v.id) + '">Configurar →</a></p>'
+        else:
+            h += '<table class="tabela"><thead><tr><th>Etapa</th><th>SLA</th><th>Candidatos</th><th>Maior tempo na etapa</th><th>Situação</th></tr></thead><tbody>'
+            for ce in etapas:
+                cands_etapa = []
+                for c in Candidatura.query.filter_by(vaga_id=v.id).all():
+                    cfg = achar_config_etapa(v.id, c.etapa)
+                    if cfg and cfg.id == ce.id:
+                        cands_etapa.append(c)
+                maior = 0
+                for c in cands_etapa:
+                    d = dias_na_etapa(c)
+                    if d > maior:
+                        maior = d
+                if cands_etapa:
+                    alerta = '<span class="pill fechada">⚠️ Acima do SLA</span>' if maior > ce.sla_dias else '<span class="pill realizada">✅ Dentro do prazo</span>'
+                else:
+                    alerta = '<span style="color:#8fa3c0;font-size:12px">sem candidatos</span>'
+                h += ('<tr><td><b>' + ce.nome + '</b></td><td>' + str(ce.sla_dias) + ' dias</td>'
+                      '<td>' + str(len(cands_etapa)) + '</td><td>' + (str(maior) + ' dias' if cands_etapa else '—') + '</td>'
+                      '<td>' + alerta + '</td></tr>')
+            h += '</tbody></table>'
+            h += '<p style="color:#8fa3c0;font-size:12px;margin-top:10px">💡 O tempo na etapa é medido desde a última movimentação no Pipeline.</p>'
+        h += '</div>'
+    return pagina(h, '/monitoramento')
+
+# ================= FINANCEIRO =================
+@app.route('/financeiro')
+@login_required
+def financeiro():
+    u = usuario_atual()
+    if not tem_permissao(u, 'financeiro'):
+        return redirect(url_for('painel'))
+    vaga_id = request.args.get('vaga', type=int)
+    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
+    h = '<h1>💰 Financeiro <span>// Custos e comissões</span></h1>'
+    h += '<p class="sub">Gestão financeira das vagas: custo, comissão do analista, comissão do RH e emissão de notas fiscais.</p>'
+    lancs = Financa.query.all()
+    if vaga_id:
+        lancs = [f for f in lancs if f.vaga_id == vaga_id]
+    total = sum(f.valor or 0 for f in lancs)
+    pendente = sum(f.valor or 0 for f in lancs if f.status in ('pendente', 'emitido'))
+    pago = sum(f.valor or 0 for f in lancs if f.status == 'pago')
+    h += '<div class="painel"><h4>Resumo</h4><div class="status">'
+    h += '<div class="item"><span class="dot ciano"></span> Lançamentos: <b>' + str(len(lancs)) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Total: <b>' + texto_int(total) + '</b></div>'
+    h += '<div class="item"><span class="dot roxo"></span> A receber: <b>' + texto_int(pendente) + '</b></div>'
+    h += '<div class="item"><span class="dot"></span> Pago: <b>' + texto_int(pago) + '</b></div>'
+    h += '</div></div>'
+    h += '<div class="caixa-busca"><select onchange="location.href=\'/financeiro?vaga=\'+this.value">'
+    h += '<option value="">Todas as vagas</option>'
+    for vg in vagas:
+        sel = ' selected' if vaga_id == vg.id else ''
+        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
+    h += '</select></div>'
+    h += '<div class="painel" style="max-width:640px"><h4>➕ Novo lançamento</h4><form id="f">'
+    h += '<label>Vaga *</label><select id="vaga_id" required><option value="">Selecione...</option>'
+    for vg in vagas:
+        h += '<option value="' + str(vg.id) + '">' + vg.titulo + '</option>'
+    h += '</select>'
+    h += '<label>Tipo *</label><select id="tipo">'
+    for k, label in TIPO_FINANCA.items():
+        h += '<option value="' + k + '">' + label + '</option>'
+    h += '</select>'
+    h += '<label>Descrição</label><input id="descricao" placeholder="ex: Comissão pela contratação do Desenvolvedor Python">'
+    h += '<label>Valor (R$) *</label><input id="valor" type="number" step="0.01" required placeholder="ex: 1500">'
+    h += '<div style="margin-top:12px"><button class="btn" type="submit">Adicionar lançamento</button></div>'
+    h += '<div class="mensagem" id="msg"></div></form></div>'
+    if not lancs:
+        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum lançamento financeiro ainda.</p></div>'
+    else:
+        h += '<div class="painel"><h4>Lançamentos</h4><table class="tabela"><thead><tr><th>Vaga</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Status</th><th>NF</th><th>Ações</th></tr></thead><tbody>'
+        for f in lancs:
+            v = Vaga.query.get(f.vaga_id)
+            nf = f.nota_fiscal or '—'
+            acoes = ''
+            if f.status in ('pendente', 'emitido'):
+                acoes += '<button class="kbtn" onclick="pagar(' + str(f.id) + ')">✅ Pagar</button>'
+            if not f.nota_fiscal:
+                acoes += '<button class="kbtn" onclick="emitirNF(' + str(f.id) + ')">🧾 Emitir NF</button>'
+            h += ('<tr><td>' + (v.titulo if v else '-') + '</td><td>' + TIPO_FINANCA.get(f.tipo, f.tipo) + '</td>'
+                  '<td>' + (f.descricao or '') + '</td><td><b style="color:#22d3ee">' + texto_int(f.valor) + '</b></td>'
+                  '<td><span class="pill ' + f.status + '">' + f.status + '</span></td><td>' + nf + '</td>'
+                  '<td><div class="kbtns">' + acoes + '</div></td></tr>')
+        h += '</tbody></table></div>'
+    h += ('<script>'
+          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
+          'fetch("/api/financas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
+          'body:JSON.stringify({vaga_id:document.getElementById("vaga_id").value,'
+          'tipo:document.getElementById("tipo").value,descricao:document.getElementById("descricao").value,'
+          'valor:document.getElementById("valor").value})})'
+          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
+          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
+          'm.innerHTML="✅ Lançamento adicionado!";setTimeout(function(){location.reload();},600);}'
+          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
+          'function pagar(fid){fetch("/api/financas/"+fid+"/pagar",{method:"POST"}).then(function(r){return r.json();})'
+          '.then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}'
+          'function emitirNF(fid){fetch("/api/financas/"+fid+"/emitir-nf",{method:"POST"}).then(function(r){return r.json();})'
+          '.then(function(j){if(j.ok){alert(j.msg);location.reload();}else{alert(j.erro);}});}</script>')
+    return pagina(h, '/financeiro')
+
 # ================= MEU PAINEL =================
 @app.route('/painel')
 @login_required
@@ -1013,7 +1427,94 @@ def painel():
     if not tem_permissao(u, 'painel'):
         return redirect(url_for('menu'))
     h = '<h1>Meu Painel <span>// ' + u.nome + '</span></h1><p class="sub">Acompanhe suas atividades no ecossistema.</p>'
-    if u.tipo == 'candidato':
+    if u.tipo == 'empresa':
+        emp = Empresa.query.filter_by(usuario_id=u.id).first()
+        h += '<div class="painel"><h4>Perfil da Empresa</h4>'
+        if emp:
+            h += '<p style="font-size:14px"><b>' + emp.razao_social + '</b> • ' + (emp.setor or '-') + ' • ' + (emp.porte or '-') + '</p>'
+        else:
+            h += '<p style="color:#8fa3c0">Complete seu perfil: <a class="link" href="/cadastrar-empresa">Cadastrar Empresa →</a></p>'
+        h += '</div>'
+        vagas = Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()
+        h += '<div class="painel"><h4>Minhas Vagas</h4>'
+        if vagas:
+            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Nível</th><th>Candidaturas</th><th>Pipeline</th><th>Ranking</th><th>Status</th></tr></thead><tbody>'
+            for v in vagas:
+                total = Candidatura.query.filter_by(vaga_id=v.id).count()
+                h += ('<tr><td><b><a class="link" href="/vagas/' + str(v.id) + '">' + v.titulo + '</a></b></td><td>' + (v.nivel_codigo or '-') + '</td>'
+                      '<td>' + str(total) + '</td>'
+                      '<td><a class="link" href="/pipeline?vaga=' + str(v.id) + '">ver kanban →</a></td>'
+                      '<td><a class="link" href="/vagas/' + str(v.id) + '/ranking">ver ranking →</a></td>'
+                      '<td><span class="pill ' + v.status + '">' + v.status + '</span></td></tr>')
+            h += '</tbody></table>'
+        else:
+            h += '<p style="color:#8fa3c0">Nenhuma vaga publicada. <a class="link" href="/cadastrar-vaga">Publicar vaga →</a></p>'
+        h += '</div>'
+        h += '<div class="painel"><h4>Gestão</h4><div class="status">'
+        if tem_permissao(u, 'cadastrar_vaga'):
+            h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
+        h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
+        h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
+        if tem_permissao(u, 'financeiro'):
+            h += '<a class="btn" href="/financeiro">💰 Financeiro</a> '
+        if tem_permissao(u, 'importar_plano'):
+            h += '<a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
+        h += '</div></div>'
+    elif u.tipo == 'admin':
+        h += '<div class="painel"><h4>Visão Geral (Administrador)</h4><div class="status">'
+        h += '<div class="item"><span class="dot"></span> Candidatos: <b>' + str(Usuario.query.filter_by(tipo='candidato').count()) + '</b></div>'
+        h += '<div class="item"><span class="dot ciano"></span> Empresas: <b>' + str(Usuario.query.filter_by(tipo='empresa').count()) + '</b></div>'
+        h += '<div class="item"><span class="dot roxo"></span> Vagas: <b>' + str(Vaga.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot ciano"></span> Conversas: <b>' + str(Conversa.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot roxo"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
+        h += '</div></div>'
+        h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
+        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
+        h += '<a class="btn" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> '
+        h += '<a class="btn roxo" href="/gerenciar">⚙️ Gerenciar Usuários</a> '
+        h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
+        h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
+        h += '<a class="btn" href="/financeiro">💰 Financeiro</a> '
+        h += '<a class="btn verde" href="/importar-plano">📥 Importar Plano PCS</a> '
+        h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
+        h += '<a class="btn cinza" href="/analytics">📈 Analytics</a>'
+        h += '</div></div>'
+        candidatos = Usuario.query.filter_by(tipo='candidato').order_by(Usuario.nome).all()
+        if candidatos:
+            h += '<div class="painel"><h4>👤 Candidatos (editar / agendar)</h4>'
+            h += '<table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Ações</th></tr></thead><tbody>'
+            for cand in candidatos:
+                h += ('<tr><td><b>' + cand.nome + '</b></td><td>' + cand.email + '</td>'
+                      '<td><span class="pill ' + ('candidato' if cand.ativo else 'fechada') + '">' + ('Ativo' if cand.ativo else 'Inativo') + '</span></td>'
+                      '<td><a class="btn cinza" href="/editar-candidato/' + str(cand.id) + '">✏️ Editar / Agendar</a></td></tr>')
+            h += '</tbody></table></div>'
+    elif u.grupo in ('analista', 'gerencia', 'diretor'):
+        h += '<div class="painel"><h4>Visão Geral (' + GRUPOS.get(u.grupo, u.grupo) + ')</h4><div class="status">'
+        h += '<div class="item"><span class="dot ciano"></span> Vagas: <b>' + str(Vaga.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot roxo"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
+        h += '<div class="item"><span class="dot"></span> Contratados: <b>' + str(Candidatura.query.filter_by(status='aprovado').count()) + '</b></div>'
+        h += '</div></div>'
+        h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
+        if tem_permissao(u, 'pipeline'):
+            h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
+        if tem_permissao(u, 'entrevistas'):
+            h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
+        if tem_permissao(u, 'testes'):
+            h += '<a class="btn" href="/config-etapas">🧪 Etapas e Testes</a> '
+        if tem_permissao(u, 'monitoramento'):
+            h += '<a class="btn" href="/monitoramento">📊 Monitoramento</a> '
+        if tem_permissao(u, 'financeiro'):
+            h += '<a class="btn" href="/financeiro">💰 Financeiro</a> '
+        if tem_permissao(u, 'mensagens'):
+            h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
+        if tem_permissao(u, 'cadastrar_vaga'):
+            h += '<a class="btn cinza" href="/cadastrar-vaga">➕ Publicar Vaga</a>'
+        h += '</div></div>'
+    else:
         p = Perfil.query.filter_by(usuario_id=u.id).first()
         if p and p.skills:
             h += '<div class="painel"><h4>Minhas Skills</h4><div class="status">'
@@ -1060,65 +1561,6 @@ def painel():
         scores = [c.match_score or 0 for c in cands]
         h += '<div class="item"><span class="dot roxo"></span> Match médio: <b>' + (str(int(sum(scores)/len(scores))) + '%' if scores else '—') + '</b></div>'
         h += '</div></div>'
-    elif u.tipo == 'empresa':
-        emp = Empresa.query.filter_by(usuario_id=u.id).first()
-        h += '<div class="painel"><h4>Perfil da Empresa</h4>'
-        if emp:
-            h += '<p style="font-size:14px"><b>' + emp.razao_social + '</b> • ' + (emp.setor or '-') + ' • ' + (emp.porte or '-') + '</p>'
-        else:
-            h += '<p style="color:#8fa3c0">Complete seu perfil: <a class="link" href="/cadastrar-empresa">Cadastrar Empresa →</a></p>'
-        h += '</div>'
-        vagas = Vaga.query.filter_by(empresa=emp.razao_social if emp else u.nome).all()
-        h += '<div class="painel"><h4>Minhas Vagas</h4>'
-        if vagas:
-            h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Nível</th><th>Candidaturas</th><th>Pipeline</th><th>Ranking</th><th>Status</th></tr></thead><tbody>'
-            for v in vagas:
-                total = Candidatura.query.filter_by(vaga_id=v.id).count()
-                h += ('<tr><td><b><a class="link" href="/vagas/' + str(v.id) + '">' + v.titulo + '</a></b></td><td>' + (v.nivel_codigo or '-') + '</td>'
-                      '<td>' + str(total) + '</td>'
-                      '<td><a class="link" href="/pipeline?vaga=' + str(v.id) + '">ver kanban →</a></td>'
-                      '<td><a class="link" href="/vagas/' + str(v.id) + '/ranking">ver ranking →</a></td>'
-                      '<td><span class="pill ' + v.status + '">' + v.status + '</span></td></tr>')
-            h += '</tbody></table>'
-        else:
-            h += '<p style="color:#8fa3c0">Nenhuma vaga publicada. <a class="link" href="/cadastrar-vaga">Publicar vaga →</a></p>'
-        h += '</div>'
-        h += '<div class="painel"><h4>Gestão</h4><div class="status">'
-        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
-        h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
-        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
-        h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
-        h += '<a class="btn cinza" href="/importar-plano">📥 Importar Plano PCS</a>'
-        h += '</div></div>'
-    else:
-        h += '<div class="painel"><h4>Visão Geral (Administrador)</h4><div class="status">'
-        h += '<div class="item"><span class="dot"></span> Candidatos: <b>' + str(Usuario.query.filter_by(tipo='candidato').count()) + '</b></div>'
-        h += '<div class="item"><span class="dot ciano"></span> Empresas: <b>' + str(Usuario.query.filter_by(tipo='empresa').count()) + '</b></div>'
-        h += '<div class="item"><span class="dot roxo"></span> Vagas: <b>' + str(Vaga.query.count()) + '</b></div>'
-        h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
-        h += '<div class="item"><span class="dot ciano"></span> Conversas: <b>' + str(Conversa.query.count()) + '</b></div>'
-        h += '<div class="item"><span class="dot roxo"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
-        h += '</div></div>'
-        h += '<div class="painel"><h4>Atalhos</h4><div class="status">'
-        h += '<a class="btn" href="/cadastrar-vaga">➕ Publicar Vaga</a> '
-        h += '<a class="btn" href="/cadastrar-candidato">👤➕ Cadastrar Candidato</a> '
-        h += '<a class="btn" href="/gerenciar">⚙️ Gerenciar Usuários</a> '
-        h += '<a class="btn" href="/pipeline">📋 Pipeline</a> '
-        h += '<a class="btn" href="/entrevistas">🎥 Entrevistas</a> '
-        h += '<a class="btn" href="/mensagens">💬 Mensagens</a> '
-        h += '<a class="btn verde" href="/importar-plano">📥 Importar Plano PCS</a> '
-        h += '<a class="btn cinza" href="/cadastrar-empresa">🏢 Cadastrar Empresa</a> '
-        h += '<a class="btn cinza" href="/analytics">📈 Analytics</a>'
-        h += '</div></div>'
-        candidatos = Usuario.query.filter_by(tipo='candidato').order_by(Usuario.nome).all()
-        if candidatos:
-            h += '<div class="painel"><h4>👤 Candidatos (editar / agendar)</h4>'
-            h += '<table class="tabela"><thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Ações</th></tr></thead><tbody>'
-            for cand in candidatos:
-                h += ('<tr><td><b>' + cand.nome + '</b></td><td>' + cand.email + '</td>'
-                      '<td><span class="pill ' + ('candidato' if cand.ativo else 'fechada') + '">' + ('Ativo' if cand.ativo else 'Inativo') + '</span></td>'
-                      '<td><a class="btn cinza" href="/editar-candidato/' + str(cand.id) + '">✏️ Editar / Agendar</a></td></tr>')
-            h += '</tbody></table></div>'
     return pagina(h, '/painel')
 
 # ================= PAGINAS PUBLICAS =================
@@ -1135,8 +1577,11 @@ def menu():
         ('🎯', 'Experiência', 'Onboarding, mentoria, feedback e comunidade', '#14b8a6', '/experiencia'),
         ('🚀', 'Inovação', 'Web3, Skills DNA, VR e recrutamento assíncrono', '#8b5cf6', '/inovacao'),
     ]
+    u = usuario_atual()
     grade = ''
     for icone, titulo, desc, cor, href in cards:
+        if u and href in ('/recrutamento', '/conectividade', '/experiencia', '/inovacao', '/empresas') and not tem_permissao(u, 'empresas') and href == '/empresas':
+            continue
         grade += ('<a href="' + href + '" style="text-decoration:none"><div class="card">'
                   '<div class="icone" style="background:' + cor + '22">' + icone + '</div>'
                   '<h3>' + titulo + '</h3><p>' + desc + '</p></div></a>')
@@ -1147,7 +1592,7 @@ def menu():
     h += '<div class="item"><span class="dot"></span> Servidor Online</div>'
     h += '<div class="item"><span class="dot ciano"></span> Conexões Ativas: <b id="conn2">0/' + str(MAX_CONEXOES) + '</b></div>'
     h += '<div class="item"><span class="dot roxo"></span> Agentes Autônomos: <b>5 ativos</b></div>'
-    h += '<div class="item"><span class="dot"></span> Módulos: <b>14</b></div>'
+    h += '<div class="item"><span class="dot"></span> Grupos: <b>5</b> • Módulos: <b>16</b></div>'
     h += '</div></div>'
     h += '<script>setInterval(function(){fetch("/api/health").then(function(r){return r.json();}).then(function(d){'
     h += 'var el=document.getElementById("conn2");if(el)el.textContent=d.conexoes_ativas+"/"+d.conexoes_maximas;}).catch(function(){});},3000);</script>'
@@ -1264,7 +1709,7 @@ def detalhe_vaga(vid):
     u = usuario_atual()
     if u and tem_permissao(u, 'mensagens'):
         h += '<a class="btn cinza" href="/conversa/' + str(vid) + '">💬 Falar com a empresa</a>'
-    if u and u.tipo in ('admin', 'empresa'):
+    if u and (tem_permissao(u, 'pipeline') or tem_permissao(u, 'entrevistas')):
         h += '<a class="btn cinza" href="/vagas/' + str(vid) + '/ranking">🏆 Ver Ranking</a>'
         h += '<a class="btn cinza" href="/pipeline?vaga=' + str(vid) + '">📋 Ver Pipeline</a>'
         h += '<a class="btn cinza" href="/entrevistas?vaga=' + str(vid) + '">🎥 Entrevistas</a>'
@@ -1278,8 +1723,8 @@ def ranking_vaga(vid):
     if not v:
         return pagina('<h1>Vaga não encontrada</h1>', '/vagas')
     u = usuario_atual()
-    if u.tipo not in ('admin', 'empresa'):
-        return pagina('<h1>Acesso restrito</h1><p class="sub">Somente empresas e administradores podem ver o ranking de candidatos.</p>', '/vagas')
+    if not (tem_permissao(u, 'pipeline') or tem_permissao(u, 'entrevistas')):
+        return pagina('<h1>Acesso restrito</h1><p class="sub">Somente gestores podem ver o ranking de candidatos.</p>', '/vagas')
     cands = Candidatura.query.filter_by(vaga_id=vid).order_by(Candidatura.match_score.desc()).all()
     h = '<h1>🏆 Ranking <span>// ' + v.titulo + '</span></h1>'
     h += '<p class="sub">Candidatos ordenados pelo Match Score — empresa ' + (v.empresa or '') + ' • ' + str(len(cands)) + ' candidaturas</p>'
@@ -1631,11 +2076,12 @@ def calcular_match(vaga, candidato):
 @app.route('/api/health')
 def health():
     return jsonify({
-        'status': 'online', 'versao': '10.0.0',
+        'status': 'online', 'versao': '11.0.0',
         'conexoes_ativas': conexoes_ativas, 'conexoes_maximas': MAX_CONEXOES,
         'modulos': ['usuarios', 'vagas', 'candidatos', 'empresas', 'pcs', 'conectividade',
                     'recrutamento', 'analytics', 'experiencia', 'inovacao', 'pipeline', 'mensagens',
-                    'entrevistas', 'gerenciamento'],
+                    'entrevistas', 'gerenciamento', 'etapas', 'testes', 'monitoramento', 'financeiro'],
+        'grupos': ['empresa', 'candidato', 'analista', 'gerencia', 'diretor'],
         'agentes': ['sourcing', 'triagem', 'scheduling', 'followup', 'dei'],
         'trilhas': Trilha.query.count(), 'niveis': Nivel.query.count(), 'vagas': Vaga.query.count(),
         'candidaturas': Candidatura.query.count(), 'conversas': Conversa.query.count(),
@@ -1674,15 +2120,19 @@ def api_registro():
         return jsonify({'erro': 'Senha deve ter pelo menos 6 caracteres'}), 400
     if Usuario.query.filter_by(email=email).first():
         return jsonify({'erro': 'Email já cadastrado'}), 409
-   u = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha), tipo=tipo, ativo=True, grupo=tipo)
+    u = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha), tipo=tipo, grupo=tipo, ativo=True)
     db.session.add(u)
     db.session.commit()
     if tipo == 'empresa':
         db.session.add(Empresa(usuario_id=u.id, razao_social=nome, nome_fantasia=nome))
         db.session.commit()
+    base = PERMISSOES_PADRAO.get(tipo, [])
+    for mod in MODULOS_GERENCIAVEIS:
+        db.session.add(Permissao(usuario_id=u.id, modulo=mod, habilitado=mod in base))
+    db.session.commit()
     session['user_id'] = u.id
     return jsonify({'ok': True, 'msg': 'Conta criada com sucesso',
-                    'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo}}), 201
+                    'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo, 'grupo': u.grupo}}), 201
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
@@ -1694,7 +2144,7 @@ def api_login():
         return jsonify({'erro': 'Conta desativada. Fale com o administrador.'}), 403
     session['user_id'] = u.id
     return jsonify({'ok': True, 'msg': 'Bem-vindo(a)!',
-                    'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo}})
+                    'usuario': {'id': u.id, 'nome': u.nome, 'email': u.email, 'tipo': u.tipo, 'grupo': u.grupo}})
 
 @app.route('/api/perfil', methods=['POST'])
 def api_perfil():
@@ -1794,6 +2244,7 @@ def api_cadastrar_vaga():
         for r in [x.strip() for x in reqs.split(',') if x.strip()]:
             db.session.add(Requisito(vaga_id=v.id, skill=r))
     db.session.commit()
+    criar_etapas_padrao(v.id)
     return jsonify({'ok': True, 'msg': 'Vaga publicada com sucesso', 'vaga_id': v.id})
 
 @app.route('/api/empresas/cadastrar', methods=['POST'])
@@ -1810,9 +2261,11 @@ def api_cadastrar_empresa():
     usr = Usuario.query.filter_by(email=email).first()
     if not usr:
         usr = Usuario(nome=razao, email=email, senha_hash=generate_password_hash('empresa123'),
-                      tipo='empresa', ativo=True)
+                      tipo='empresa', grupo='empresa', ativo=True)
         db.session.add(usr)
         db.session.flush()
+        for mod in MODULOS_GERENCIAVEIS:
+            db.session.add(Permissao(usuario_id=usr.id, modulo=mod, habilitado=True))
     emp = Empresa(usuario_id=usr.id, razao_social=razao, nome_fantasia=d.get('nome_fantasia'),
                   cnpj=cnpj, porte=d.get('porte'), setor=d.get('setor'),
                   descricao=d.get('descricao'), cultura=d.get('cultura'))
@@ -1836,7 +2289,7 @@ def api_admin_cadastrar_candidato():
     if Usuario.query.filter_by(email=email).first():
         return jsonify({'erro': 'E-mail já cadastrado'}), 409
     novo = Usuario(nome=nome, email=email, senha_hash=generate_password_hash(senha),
-                   tipo='candidato', ativo=True, grupo='candidato')
+                   tipo='candidato', grupo='candidato', ativo=True)
     db.session.add(novo)
     db.session.flush()
     skills = (d.get('skills') or '').strip()
@@ -1905,10 +2358,11 @@ def api_admin_agendar_entrevista():
     c = Candidatura.query.filter_by(vaga_id=v.id, candidato_id=cand.id).first()
     if not c:
         c = Candidatura(vaga_id=v.id, candidato_id=cand.id, match_score=calcular_match(v, cand),
-                        status='pendente', etapa='triagem')
+                        status='pendente', etapa='triagem', etapa_atualizada_em=datetime.utcnow())
         db.session.add(c)
         db.session.flush()
     c.etapa = 'entrevista'
+    c.etapa_atualizada_em = datetime.utcnow()
     ent = Entrevista(vaga_id=v.id, candidato_id=cand.id, empresa_id=emp.id, data_hora=data_hora,
                      tipo=(d.get('tipo') or 'Video'), link=(d.get('link') or '').strip(), status='agendada')
     db.session.add(ent)
@@ -1924,24 +2378,38 @@ def api_admin_permissoes():
     alvo = Usuario.query.get(d.get('usuario_id', type=int))
     if not alvo or alvo.tipo == 'admin':
         return jsonify({'erro': 'Usuário inválido'}), 400
+    novo_grupo = (d.get('grupo') or '').strip()
+    if novo_grupo not in GRUPOS:
+        novo_grupo = grupo_usuario(alvo)
+    grupo_mudou = novo_grupo != grupo_usuario(alvo)
+    alvo.grupo = novo_grupo
     perms = d.get('permissoes') or {}
     if '_ativo' in perms:
         alvo.ativo = bool(perms['_ativo'])
         perms.pop('_ativo', None)
+    if grupo_mudou:
+        # resetar para os padroes do novo grupo
+        for p in Permissao.query.filter_by(usuario_id=alvo.id).all():
+            db.session.delete(p)
+        db.session.flush()
+        for mod in MODULOS_GERENCIAVEIS:
+            db.session.add(Permissao(usuario_id=alvo.id, modulo=mod,
+                                     habilitado=mod in PERMISSOES_PADRAO.get(novo_grupo, [])))
+        db.session.flush()
     for mod in MODULOS_GERENCIAVEIS:
-        p = Permissao.query.filter_by(usuario_id=alvo.id, modulo=mod).first()
-        if not p:
-            p = Permissao(usuario_id=alvo.id, modulo=mod)
-            db.session.add(p)
         if mod in perms:
+            p = Permissao.query.filter_by(usuario_id=alvo.id, modulo=mod).first()
+            if not p:
+                p = Permissao(usuario_id=alvo.id, modulo=mod)
+                db.session.add(p)
             p.habilitado = bool(perms[mod])
     db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Permissões salvas!'})
+    return jsonify({'ok': True, 'msg': 'Permissões salvas!', 'grupo': novo_grupo})
 
 @app.route('/api/pipeline/<int:cid>/etapa', methods=['POST'])
 def pipeline_etapa(cid):
     u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
+    if not u or not tem_permissao(u, 'pipeline'):
         return jsonify({'erro': 'Acesso restrito'}), 403
     c = Candidatura.query.get(cid)
     if not c:
@@ -1951,7 +2419,7 @@ def pipeline_etapa(cid):
     if etapa not in ETAPAS:
         return jsonify({'erro': 'Etapa inválida'}), 400
     c.etapa = etapa
-    db.session.execute(text("UPDATE candidatura SET etapa_atualizada_em = :t WHERE id = :i"), {'t': datetime.utcnow(), 'i': c.id})
+    c.etapa_atualizada_em = datetime.utcnow()
     if etapa == 'contratado':
         c.status = 'aprovado'
     elif etapa == 'rejeitado':
@@ -1964,7 +2432,7 @@ def pipeline_etapa(cid):
 @app.route('/api/entrevistas/cadastrar', methods=['POST'])
 def api_cadastrar_entrevista():
     u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
+    if not u or not tem_permissao(u, 'entrevistas') or u.tipo == 'candidato':
         return jsonify({'erro': 'Acesso restrito'}), 403
     d = request.get_json(force=True)
     c = Candidatura.query.get(d.get('candidatura', type=int) or 0)
@@ -1983,13 +2451,14 @@ def api_cadastrar_entrevista():
     db.session.add(ent)
     if c.etapa == 'triagem':
         c.etapa = 'entrevista'
+        c.etapa_atualizada_em = datetime.utcnow()
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Entrevista agendada!', 'entrevista_id': ent.id})
 
 @app.route('/api/entrevistas/<int:eid>/status')
 def api_entrevista_status(eid):
     u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
+    if not u or not tem_permissao(u, 'entrevistas'):
         return jsonify({'erro': 'Acesso restrito'}), 403
     e = Entrevista.query.get(eid)
     if not e:
@@ -2002,13 +2471,14 @@ def api_entrevista_status(eid):
         c = Candidatura.query.filter_by(vaga_id=e.vaga_id, candidato_id=e.candidato_id).first()
         if c and c.etapa == 'entrevista':
             c.etapa = 'triagem'
+            c.etapa_atualizada_em = datetime.utcnow()
     db.session.commit()
     return redirect(url_for('entrevistas', vaga=e.vaga_id))
 
 @app.route('/api/entrevistas/<int:eid>/avaliar', methods=['POST'])
 def api_avaliar_entrevista(eid):
     u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
+    if not u or not tem_permissao(u, 'entrevistas') or u.tipo == 'candidato':
         return jsonify({'erro': 'Acesso restrito'}), 403
     e = Entrevista.query.get(eid)
     if not e:
@@ -2027,6 +2497,153 @@ def api_avaliar_entrevista(eid):
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Avaliação salva!', 'nota': nota})
 
+# ================= APIS ETAPAS =================
+@app.route('/api/etapas/cadastrar', methods=['POST'])
+def api_etapas_cadastrar():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'testes'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not v:
+        return jsonify({'erro': 'Vaga não encontrada'}), 404
+    nome = (d.get('nome') or '').strip()
+    if not nome:
+        return jsonify({'erro': 'Informe o nome da etapa'}), 400
+    max_ordem = db.session.query(db.func.max(ConfigEtapa.ordem)).filter_by(vaga_id=v.id).scalar() or 0
+    e = ConfigEtapa(vaga_id=v.id, nome=nome, ordem=max_ordem + 1,
+                    sla_dias=int(d.get('sla_dias') or 3),
+                    tem_teste=bool(d.get('tem_teste', False)),
+                    atividades=(d.get('atividades') or '').strip())
+    db.session.add(e)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Etapa adicionada'})
+
+@app.route('/api/etapas/<int:eid>/atualizar', methods=['POST'])
+def api_etapas_atualizar(eid):
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'testes'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    e = ConfigEtapa.query.get(eid)
+    if not e:
+        return jsonify({'erro': 'Etapa não encontrada'}), 404
+    d = request.get_json(force=True)
+    try:
+        e.sla_dias = int(d.get('sla_dias') or e.sla_dias)
+    except Exception:
+        pass
+    e.atividades = (d.get('atividades') or '').strip() or e.atividades
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Etapa atualizada'})
+
+@app.route('/api/etapas/<int:eid>/remover', methods=['POST'])
+def api_etapas_remover(eid):
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'testes'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    e = ConfigEtapa.query.get(eid)
+    if not e:
+        return jsonify({'erro': 'Etapa não encontrada'}), 404
+    db.session.delete(e)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Etapa removida'})
+
+# ================= APIS TESTES =================
+@app.route('/api/testes/cadastrar', methods=['POST'])
+def api_teste_cadastrar():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'testes'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not v:
+        return jsonify({'erro': 'Vaga não encontrada'}), 404
+    nome = (d.get('nome') or '').strip()
+    if not nome:
+        return jsonify({'erro': 'Informe o nome do teste'}), 400
+    t = Teste(vaga_id=v.id, nome=nome, tipo=(d.get('tipo') or 'tecnico'),
+              etapa_nome=(d.get('etapa_nome') or '').strip(),
+              nota_max=parse_float(d.get('nota_max')) or 10.0)
+    db.session.add(t)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Teste cadastrado'})
+
+@app.route('/api/testes/resultado', methods=['POST'])
+def api_teste_resultado():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'testes'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    t = Teste.query.get(d.get('teste_id', type=int))
+    cand = Usuario.query.get(d.get('candidato_id', type=int))
+    if not t or not cand or cand.tipo != 'candidato':
+        return jsonify({'erro': 'Teste ou candidato inválido'}), 400
+    r = ResultadoTeste.query.filter_by(teste_id=t.id, candidato_id=cand.id).first()
+    if not r:
+        r = ResultadoTeste(teste_id=t.id, candidato_id=cand.id, vaga_id=t.vaga_id)
+        db.session.add(r)
+    nota = parse_float(d.get('nota'))
+    if nota is None:
+        r.nota = None
+        r.status = 'pendente'
+        r.realizado_em = None
+    else:
+        r.nota = nota
+        r.status = 'aprovado' if nota >= (t.nota_max or 10) * 0.7 else 'reprovado'
+        r.realizado_em = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Resultado salvo', 'status': r.status})
+
+# ================= APIS FINANCEIRO =================
+@app.route('/api/financas/cadastrar', methods=['POST'])
+def api_financa_cadastrar():
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'financeiro'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    d = request.get_json(force=True)
+    v = Vaga.query.get(d.get('vaga_id', type=int))
+    if not v:
+        return jsonify({'erro': 'Selecione a vaga'}), 400
+    valor = parse_float(d.get('valor'))
+    if valor is None or valor < 0:
+        return jsonify({'erro': 'Valor inválido'}), 400
+    f = Financa(vaga_id=v.id, tipo=(d.get('tipo') or 'custo_vaga'),
+                descricao=(d.get('descricao') or '').strip(), valor=valor, status='pendente')
+    db.session.add(f)
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Lançamento adicionado'})
+
+@app.route('/api/financas/<int:fid>/pagar', methods=['POST'])
+def api_financa_pagar(fid):
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'financeiro'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    f = Financa.query.get(fid)
+    if not f:
+        return jsonify({'erro': 'Lançamento não encontrado'}), 404
+    f.status = 'pago'
+    f.paga_em = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'Lançamento marcado como pago'})
+
+@app.route('/api/financas/<int:fid>/emitir-nf', methods=['POST'])
+def api_financa_emitir_nf(fid):
+    u = usuario_atual()
+    if not u or not tem_permissao(u, 'financeiro'):
+        return jsonify({'erro': 'Acesso restrito'}), 403
+    f = Financa.query.get(fid)
+    if not f:
+        return jsonify({'erro': 'Lançamento não encontrado'}), 404
+    if f.nota_fiscal:
+        return jsonify({'erro': 'NF já emitida: ' + f.nota_fiscal}), 400
+    ano = datetime.utcnow().year
+    seq = Financa.query.filter(Financa.nota_fiscal.isnot(None)).count() + 1
+    f.nota_fiscal = 'NF-' + str(ano) + '-' + str(seq).zfill(4)
+    f.status = 'emitido'
+    db.session.commit()
+    return jsonify({'ok': True, 'msg': 'NF emitida: ' + f.nota_fiscal, 'nota_fiscal': f.nota_fiscal})
+
+# ================= APIS CONVERSAS =================
 @app.route('/api/conversas/<int:cid>/mensagens', methods=['GET', 'POST'])
 def api_mensagens(cid):
     u = usuario_atual()
@@ -2067,7 +2684,7 @@ def candidatar(vid):
     cand = Usuario.query.filter_by(email=email).first()
     if not cand:
         cand = Usuario(nome=nome, email=email, senha_hash=generate_password_hash('candidato123'),
-                       tipo='candidato', ativo=True)
+                       tipo='candidato', grupo='candidato', ativo=True)
         db.session.add(cand)
         db.session.flush()
         for mod in MODULOS_GERENCIAVEIS:
@@ -2087,579 +2704,46 @@ def candidatar(vid):
                         'vaga': v.titulo, 'candidato': cand.nome, 'match_score': int(ja.match_score),
                         'status': ja.status, 'etapa': ja.etapa})
     score = calcular_match(v, cand)
-    c = Candidatura(vaga_id=vid, candidato_id=cand.id, match_score=score, status='pendente', etapa='triagem')
+    c = Candidatura(vaga_id=vid, candidato_id=cand.id, match_score=score, status='pendente',
+                    etapa='triagem', etapa_atualizada_em=datetime.utcnow())
     db.session.add(c)
     db.session.commit()
     return jsonify({'ok': True, 'msg': 'Candidatura enviada', 'vaga': v.titulo, 'empresa': v.empresa,
                     'candidato': cand.nome, 'email': email, 'match_score': score, 'status': 'pendente',
                     'etapa': 'triagem'})
-from sqlalchemy import text
 
-# ================= V10: ETAPAS, TESTES, MONITORAMENTO E FINANCEIRO =================
-
-TIPO_FINANCA = {
-    'custo_vaga': '💰 Custo da Vaga',
-    'comissao_analista': '🧑‍💼 Comissão Analista',
-    'comissao_rh': '🤝 Comissão RH',
-    'receita': '📈 Receita do Cliente',
-    'outro': '📦 Outro',
-}
-
-class ConfigEtapa(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    nome = db.Column(db.String(80), nullable=False)
-    ordem = db.Column(db.Integer, default=1)
-    sla_dias = db.Column(db.Integer, default=3)
-    tem_teste = db.Column(db.Boolean, default=False)
-    atividades = db.Column(db.Text)
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Teste(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    etapa_nome = db.Column(db.String(80))
-    nome = db.Column(db.String(120), nullable=False)
-    tipo = db.Column(db.String(30), default='tecnico')
-    nota_max = db.Column(db.Float, default=10.0)
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-
-class ResultadoTeste(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    teste_id = db.Column(db.Integer, db.ForeignKey('teste.id'))
-    candidato_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    nota = db.Column(db.Float)
-    status = db.Column(db.String(20), default='pendente')
-    observacao = db.Column(db.Text)
-    realizado_em = db.Column(db.DateTime)
-
-class Financa(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    vaga_id = db.Column(db.Integer, db.ForeignKey('vaga.id'))
-    tipo = db.Column(db.String(30), default='custo_vaga')
-    descricao = db.Column(db.String(200))
-    valor = db.Column(db.Float, default=0.0)
-    status = db.Column(db.String(20), default='pendente')
-    nota_fiscal = db.Column(db.String(30))
-    criada_em = db.Column(db.DateTime, default=datetime.utcnow)
-    paga_em = db.Column(db.DateTime)
-
-MAPA_ETAPA_KANBAN = {'triagem': 'triagem', 'entrevista': 'entrevista', 'proposta': 'proposta', 'contratado': 'contratado', 'rejeitado': 'rejeitado'}
-
-def criar_etapas_padrao(vaga_id):
-    if ConfigEtapa.query.filter_by(vaga_id=vaga_id).first():
-        return
-    padrao = [
-        ('Triagem', 1, 3, False, 'Análise de currículo, perfil e fit inicial.'),
-        ('Testes', 2, 5, True, 'Aplicação de testes técnicos/comportamentais.'),
-        ('Entrevista', 3, 7, False, 'Entrevista com RH e gestor da área.'),
-        ('Proposta', 4, 5, False, 'Negociação, aprovação e envio da proposta.'),
-    ]
-    for nome, ordem, sla, teste, atv in padrao:
-        db.session.add(ConfigEtapa(vaga_id=vaga_id, nome=nome, ordem=ordem, sla_dias=sla, tem_teste=teste, atividades=atv))
-    db.session.commit()
-
-def achar_config_etapa(vaga_id, etapa_kanban):
-    nome_kanban = MAPA_ETAPA_KANBAN.get(etapa_kanban, etapa_kanban or '')
-    for ce in ConfigEtapa.query.filter_by(vaga_id=vaga_id).all():
-        if ce.nome and nome_kanban and (nome_kanban in ce.nome.lower() or ce.nome.lower() in nome_kanban):
-            return ce
-    return None
-
-def get_etapa_atualizada(cid):
-    try:
-        r = db.session.execute(text("SELECT etapa_atualizada_em FROM candidatura WHERE id=:i"), {'i': cid}).fetchone()
-        if r and r[0]:
-            return r[0]
-    except Exception:
-        pass
-    return None
-
-def dias_na_etapa(c):
-    ref = get_etapa_atualizada(c.id) or c.criada_em
-    if not ref:
-        return 0
-    return (datetime.utcnow() - ref).days
-
-# ================= V10: CONFIG DE ETAPAS =================
-@app.route('/config-etapas')
-@gestor_required
-def config_etapas():
-    vaga_id = request.args.get('vaga', type=int)
-    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
-    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
-    if not v:
-        return pagina('<h1>Nenhuma vaga cadastrada</h1>', '/')
-    h = '<h1>🧪 Etapas e Testes <span>// ' + v.titulo + '</span></h1>'
-    h += '<p class="sub">Padronize as etapas da vaga, defina prazos (SLA), atividades e testes de cada fase.</p>'
-    h += '<div class="caixa-busca"><select onchange="location.href=\'/config-etapas?vaga=\'+this.value">'
-    for vg in vagas:
-        sel = ' selected' if vg.id == v.id else ''
-        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
-    h += '</select><a class="btn cinza" href="/testes?vaga=' + str(v.id) + '">📝 Testes</a>'
-    h += '<a class="btn cinza" href="/monitoramento?vaga=' + str(v.id) + '">📊 Monitoramento</a></div>'
-    etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
-    if not etapas:
-        criar_etapas_padrao(v.id)
-        etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
-    h += '<div class="painel"><h4>Etapas do Funil (prazos e metas)</h4>'
-    h += '<table class="tabela"><thead><tr><th>#</th><th>Etapa</th><th>SLA (dias)</th><th>Teste</th><th>Atividades</th><th>Ações</th></tr></thead><tbody>'
-    for e in etapas:
-        teste = '✅ Sim' if e.tem_teste else '—'
-        h += ('<tr><td>' + str(e.ordem) + '</td><td><b>' + e.nome + '</b></td>'
-              '<td><input type="number" id="sla_' + str(e.id) + '" value="' + str(e.sla_dias) + '" style="width:70px"></td>'
-              '<td>' + teste + '</td>'
-              '<td><input id="atv_' + str(e.id) + '" value="' + (e.atividades or '') + '" style="width:100%"></td>'
-              '<td><button class="kbtn" onclick="salvarEtapa(' + str(e.id) + ')">💾</button> '
-              '<button class="kbtn" onclick="removerEtapa(' + str(e.id) + ')">🗑️</button></td></tr>')
-    h += '</tbody></table>'
-    h += '<h4 style="margin-top:14px">➕ Nova etapa</h4><form id="f">'
-    h += '<div class="status" style="align-items:flex-end">'
-    h += '<div style="flex:1"><label>Nome da etapa</label><input id="nome" required placeholder="ex: Teste Prático"></div>'
-    h += '<div style="width:100px"><label>SLA (dias)</label><input id="sla" type="number" value="3"></div>'
-    h += '<div><label>Tem teste?</label><select id="tem_teste"><option value="0">Não</option><option value="1">Sim</option></select></div>'
-    h += '<div style="flex:2"><label>Atividades da fase</label><input id="atividades" placeholder="O que acontece nesta etapa?"></div>'
-    h += '<div><button class="btn" type="submit">Adicionar</button></div></div></form>'
-    h += '<div class="mensagem" id="msg"></div></div>'
-    h += ('<script>'
-          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
-          'fetch("/api/etapas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({vaga_id:' + str(v.id) + ',nome:document.getElementById("nome").value,'
-          'sla_dias:document.getElementById("sla").value,tem_teste:document.getElementById("tem_teste").value==="1",'
-          'atividades:document.getElementById("atividades").value})})'
-          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
-          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
-          'm.innerHTML="✅ Etapa adicionada! Atualizando...";setTimeout(function(){location.reload();},600);}'
-          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
-          'function salvarEtapa(id){fetch("/api/etapas/"+id+"/atualizar",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({sla_dias:document.getElementById("sla_"+id).value,atividades:document.getElementById("atv_"+id).value})})'
-          '.then(function(r){return r.json();}).then(function(j){alert(j.msg||j.erro);});}'
-          'function removerEtapa(id){if(!confirm("Remover esta etapa?")){return;}'
-          'fetch("/api/etapas/"+id+"/remover",{method:"POST"}).then(function(r){return r.json();})'
-          '.then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}</script>')
-    return pagina(h, '/config-etapas')
-
-@app.route('/api/etapas/cadastrar', methods=['POST'])
-def api_etapas_cadastrar():
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    d = request.get_json(force=True)
-    v = Vaga.query.get(d.get('vaga_id', type=int))
-    if not v:
-        return jsonify({'erro': 'Vaga não encontrada'}), 404
-    nome = (d.get('nome') or '').strip()
-    if not nome:
-        return jsonify({'erro': 'Informe o nome da etapa'}), 400
-    max_ordem = db.session.query(db.func.max(ConfigEtapa.ordem)).filter_by(vaga_id=v.id).scalar() or 0
-    e = ConfigEtapa(vaga_id=v.id, nome=nome, ordem=max_ordem + 1,
-                    sla_dias=int(d.get('sla_dias') or 3),
-                    tem_teste=bool(d.get('tem_teste', False)),
-                    atividades=(d.get('atividades') or '').strip())
-    db.session.add(e)
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Etapa adicionada'})
-
-@app.route('/api/etapas/<int:eid>/atualizar', methods=['POST'])
-def api_etapas_atualizar(eid):
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    e = ConfigEtapa.query.get(eid)
-    if not e:
-        return jsonify({'erro': 'Etapa não encontrada'}), 404
-    d = request.get_json(force=True)
-    try:
-        e.sla_dias = int(d.get('sla_dias') or e.sla_dias)
-    except Exception:
-        pass
-    e.atividades = (d.get('atividades') or '').strip() or e.atividades
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Etapa atualizada'})
-
-@app.route('/api/etapas/<int:eid>/remover', methods=['POST'])
-def api_etapas_remover(eid):
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    e = ConfigEtapa.query.get(eid)
-    if not e:
-        return jsonify({'erro': 'Etapa não encontrada'}), 404
-    db.session.delete(e)
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Etapa removida'})
-
-# ================= V10: TESTES =================
-@app.route('/testes')
-@gestor_required
-def testes():
-    vaga_id = request.args.get('vaga', type=int)
-    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
-    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
-    if not v:
-        return pagina('<h1>Nenhuma vaga cadastrada</h1>', '/')
-    h = '<h1>📝 Testes <span>// ' + v.titulo + '</span></h1>'
-    h += '<p class="sub">Cadastre os testes de cada fase e lance as notas dos candidatos.</p>'
-    h += '<div class="caixa-busca"><select onchange="location.href=\'/testes?vaga=\'+this.value">'
-    for vg in vagas:
-        sel = ' selected' if vg.id == v.id else ''
-        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
-    h += '</select><a class="btn cinza" href="/config-etapas?vaga=' + str(v.id) + '">🧪 Etapas</a>'
-    h += '<a class="btn cinza" href="/monitoramento?vaga=' + str(v.id) + '">📊 Monitoramento</a></div>'
-    h += '<div class="painel" style="max-width:640px"><h4>➕ Cadastrar teste</h4><form id="f">'
-    h += '<label>Nome do teste *</label><input id="nome" required placeholder="ex: Teste Técnico Python">'
-    h += '<label>Tipo</label><select id="tipo"><option value="tecnico">💻 Técnico</option><option value="comportamental">🧠 Comportamental</option><option value="idioma">🗣️ Idioma</option><option value="logica">🧩 Lógica</option></select>'
-    h += '<label>Etapa relacionada</label><select id="etapa_nome"><option value="">—</option>'
-    for ce in ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all():
-        h += '<option value="' + ce.nome + '">' + ce.nome + '</option>'
-    h += '</select>'
-    h += '<label>Nota máxima</label><input id="nota_max" type="number" value="10" step="0.5">'
-    h += '<div style="margin-top:12px"><button class="btn" type="submit">Cadastrar teste</button></div>'
-    h += '<div class="mensagem" id="msg"></div></form></div>'
-    testes_lista = Teste.query.filter_by(vaga_id=v.id).order_by(Teste.id.desc()).all()
-    candidaturas = Candidatura.query.filter_by(vaga_id=v.id).all()
-    if not testes_lista:
-        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum teste cadastrado ainda para esta vaga.</p></div>'
-    for t in testes_lista:
-        h += '<div class="painel"><h4>📝 ' + t.nome + ' • ' + t.tipo + ' • Nota máx: ' + str(int(t.nota_max)) + '</h4>'
-        h += '<p style="color:#8fa3c0;font-size:12px;margin-bottom:10px">Etapa: ' + (t.etapa_nome or '—') + '</p>'
-        h += '<table class="tabela"><thead><tr><th>Candidato</th><th>Nota</th><th>Status</th><th>Salvar</th></tr></thead><tbody>'
-        for c in candidaturas:
-            cand = Usuario.query.get(c.candidato_id)
-            r = ResultadoTeste.query.filter_by(teste_id=t.id, candidato_id=c.candidato_id).first()
-            valor = str(int(r.nota)) if r and r.nota is not None else ''
-            if r and r.status != 'pendente':
-                status = '<span class="pill ' + r.status + '">' + r.status + '</span>'
-            else:
-                status = '<span class="pill pendente">pendente</span>'
-            h += ('<tr><td><b>' + (cand.nome if cand else '-') + '</b></td>'
-                  '<td><input id="nota_' + str(t.id) + '_' + str(c.candidato_id) + '" type="number" min="0" step="0.5" value="' + valor + '" style="width:80px"></td>'
-                  '<td>' + status + '</td>'
-                  '<td><button class="kbtn" onclick="salvarNota(' + str(t.id) + ',' + str(c.candidato_id) + ')">💾</button></td></tr>')
-        h += '</tbody></table></div>'
-    h += ('<script>'
-          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
-          'fetch("/api/testes/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({vaga_id:' + str(v.id) + ',nome:document.getElementById("nome").value,'
-          'tipo:document.getElementById("tipo").value,etapa_nome:document.getElementById("etapa_nome").value,'
-          'nota_max:document.getElementById("nota_max").value})})'
-          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
-          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
-          'm.innerHTML="✅ Teste cadastrado!";setTimeout(function(){location.reload();},600);}'
-          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
-          'function salvarNota(tid,cid){var n=document.getElementById("nota_"+tid+"_"+cid).value;'
-          'fetch("/api/testes/resultado",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({teste_id:tid,candidato_id:cid,nota:n})})'
-          '.then(function(r){return r.json();}).then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}</script>')
-    return pagina(h, '/testes')
-
-@app.route('/api/testes/cadastrar', methods=['POST'])
-def api_teste_cadastrar():
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    d = request.get_json(force=True)
-    v = Vaga.query.get(d.get('vaga_id', type=int))
-    if not v:
-        return jsonify({'erro': 'Vaga não encontrada'}), 404
-    nome = (d.get('nome') or '').strip()
-    if not nome:
-        return jsonify({'erro': 'Informe o nome do teste'}), 400
-    t = Teste(vaga_id=v.id, nome=nome, tipo=(d.get('tipo') or 'tecnico'),
-              etapa_nome=(d.get('etapa_nome') or '').strip(),
-              nota_max=parse_float(d.get('nota_max')) or 10.0)
-    db.session.add(t)
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Teste cadastrado'})
-
-@app.route('/api/testes/resultado', methods=['POST'])
-def api_teste_resultado():
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    d = request.get_json(force=True)
-    t = Teste.query.get(d.get('teste_id', type=int))
-    cand = Usuario.query.get(d.get('candidato_id', type=int))
-    if not t or not cand or cand.tipo != 'candidato':
-        return jsonify({'erro': 'Teste ou candidato inválido'}), 400
-    r = ResultadoTeste.query.filter_by(teste_id=t.id, candidato_id=cand.id).first()
-    if not r:
-        r = ResultadoTeste(teste_id=t.id, candidato_id=cand.id, vaga_id=t.vaga_id)
-        db.session.add(r)
-    nota = parse_float(d.get('nota'))
-    if nota is None:
-        r.nota = None
-        r.status = 'pendente'
-        r.realizado_em = None
-    else:
-        r.nota = nota
-        r.status = 'aprovado' if nota >= (t.nota_max or 10) * 0.7 else 'reprovado'
-        r.realizado_em = datetime.utcnow()
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Resultado salvo', 'status': r.status})
-
-# ================= V10: MONITORAMENTO =================
-@app.route('/monitoramento')
-@gestor_required
-def monitoramento():
-    vaga_id = request.args.get('vaga', type=int)
-    vagas = Vaga.query.order_by(Vaga.criada_em).all()
-    v = Vaga.query.get(vaga_id) if vaga_id else (vagas[0] if vagas else None)
-    agora = datetime.utcnow()
-    h = '<h1>📊 Monitoramento <span>// Funil e prazos</span></h1>'
-    h += '<p class="sub">Controle de prazos por etapa, tempo de abertura das vagas e fatores do processo.</p>'
-    h += '<div class="caixa-busca"><select onchange="location.href=\'/monitoramento?vaga=\'+this.value">'
-    for vg in vagas:
-        sel = ' selected' if v and vg.id == v.id else ''
-        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
-    h += '</select><a class="btn cinza" href="/config-etapas?vaga=' + str((v.id if v else 0)) + '">🧪 Etapas</a>'
-    h += '<a class="btn cinza" href="/financeiro">💰 Financeiro</a></div>'
-    h += '<div class="painel"><h4>Indicadores</h4><div class="status">'
-    h += '<div class="item"><span class="dot ciano"></span> Vagas abertas: <b>' + str(Vaga.query.filter_by(status='aberta').count()) + '</b></div>'
-    h += '<div class="item"><span class="dot"></span> Candidaturas: <b>' + str(Candidatura.query.count()) + '</b></div>'
-    h += '<div class="item"><span class="dot roxo"></span> Contratados: <b>' + str(Candidatura.query.filter_by(status='aprovado').count()) + '</b></div>'
-    h += '<div class="item"><span class="dot"></span> Entrevistas: <b>' + str(Entrevista.query.count()) + '</b></div>'
-    h += '</div></div>'
-    h += '<div class="painel"><h4>Vagas abertas por tempo (dias)</h4>'
-    h += '<table class="tabela"><thead><tr><th>Vaga</th><th>Dias abertos</th><th>Candidaturas</th><th>Entrevistas</th><th>Status</th></tr></thead><tbody>'
-    for vg in vagas:
-        dias = (agora - vg.criada_em).days if vg.criada_em else 0
-        cor = '#10b981' if dias < 15 else ('#f59e0b' if dias < 30 else '#ef4444')
-        n_cands = Candidatura.query.filter_by(vaga_id=vg.id).count()
-        n_ents = Entrevista.query.filter_by(vaga_id=vg.id).count()
-        sel = ' style="background:rgba(15,33,64,.6)"' if v and vg.id == v.id else ''
-        h += ('<tr' + sel + '><td><b>' + vg.titulo + '</b></td>'
-              '<td><b style="color:' + cor + '">' + str(dias) + ' dias</b></td>'
-              '<td>' + str(n_cands) + '</td><td>' + str(n_ents) + '</td>'
-              '<td><span class="pill ' + vg.status + '">' + vg.status + '</span></td></tr>')
-    h += '</tbody></table></div>'
-    if v:
-        h += '<div class="painel"><h4>SLA por etapa — ' + v.titulo + '</h4>'
-        etapas = ConfigEtapa.query.filter_by(vaga_id=v.id).order_by(ConfigEtapa.ordem).all()
-        if not etapas:
-            h += '<p style="color:#8fa3c0">Nenhuma etapa configurada. <a class="link" href="/config-etapas?vaga=' + str(v.id) + '">Configurar →</a></p>'
-        else:
-            h += '<table class="tabela"><thead><tr><th>Etapa</th><th>SLA</th><th>Candidatos</th><th>Maior tempo na etapa</th><th>Situação</th></tr></thead><tbody>'
-            for ce in etapas:
-                cands_etapa = []
-                for c in Candidatura.query.filter_by(vaga_id=v.id).all():
-                    cfg = achar_config_etapa(v.id, c.etapa)
-                    if cfg and cfg.id == ce.id:
-                        cands_etapa.append(c)
-                maior = 0
-                for c in cands_etapa:
-                    d = dias_na_etapa(c)
-                    if d > maior:
-                        maior = d
-                if cands_etapa:
-                    alerta = '<span class="pill fechada">⚠️ Acima do SLA</span>' if maior > ce.sla_dias else '<span class="pill realizada">✅ Dentro do prazo</span>'
-                else:
-                    alerta = '<span style="color:#8fa3c0;font-size:12px">sem candidatos</span>'
-                h += ('<tr><td><b>' + ce.nome + '</b></td><td>' + str(ce.sla_dias) + ' dias</td>'
-                      '<td>' + str(len(cands_etapa)) + '</td><td>' + (str(maior) + ' dias' if cands_etapa else '—') + '</td>'
-                      '<td>' + alerta + '</td></tr>')
-            h += '</tbody></table>'
-            h += '<p style="color:#8fa3c0;font-size:12px;margin-top:10px">💡 O tempo na etapa é medido desde a última movimentação no Pipeline (Passo 2 registra a data automaticamente).</p>'
-        h += '</div>'
-    return pagina(h, '/monitoramento')
-
-# ================= V10: FINANCEIRO =================
-@app.route('/financeiro')
-@gestor_required
-def financeiro():
-    vaga_id = request.args.get('vaga', type=int)
-    vagas = Vaga.query.order_by(Vaga.id.desc()).all()
-    h = '<h1>💰 Financeiro <span>// Custos e comissões</span></h1>'
-    h += '<p class="sub">Gestão financeira das vagas: custo, comissão do analista, comissão do RH e emissão de notas fiscais.</p>'
-    lancs = Financa.query.all()
-    if vaga_id:
-        lancs = [f for f in lancs if f.vaga_id == vaga_id]
-    total = sum(f.valor or 0 for f in lancs)
-    pendente = sum(f.valor or 0 for f in lancs if f.status in ('pendente', 'emitido'))
-    pago = sum(f.valor or 0 for f in lancs if f.status == 'pago')
-    h += '<div class="painel"><h4>Resumo</h4><div class="status">'
-    h += '<div class="item"><span class="dot ciano"></span> Lançamentos: <b>' + str(len(lancs)) + '</b></div>'
-    h += '<div class="item"><span class="dot"></span> Total: <b>' + texto_int(total) + '</b></div>'
-    h += '<div class="item"><span class="dot roxo"></span> A receber: <b>' + texto_int(pendente) + '</b></div>'
-    h += '<div class="item"><span class="dot"></span> Pago: <b>' + texto_int(pago) + '</b></div>'
-    h += '</div></div>'
-    h += '<div class="caixa-busca"><select onchange="location.href=\'/financeiro?vaga=\'+this.value">'
-    h += '<option value="">Todas as vagas</option>'
-    for vg in vagas:
-        sel = ' selected' if vaga_id == vg.id else ''
-        h += '<option value="' + str(vg.id) + '"' + sel + '>💼 ' + vg.titulo + '</option>'
-    h += '</select></div>'
-    h += '<div class="painel" style="max-width:640px"><h4>➕ Novo lançamento</h4><form id="f">'
-    h += '<label>Vaga *</label><select id="vaga_id" required><option value="">Selecione...</option>'
-    for vg in vagas:
-        h += '<option value="' + str(vg.id) + '">' + vg.titulo + '</option>'
-    h += '</select>'
-    h += '<label>Tipo *</label><select id="tipo">'
-    for k, label in TIPO_FINANCA.items():
-        h += '<option value="' + k + '">' + label + '</option>'
-    h += '</select>'
-    h += '<label>Descrição</label><input id="descricao" placeholder="ex: Comissão pela contratação do Desenvolvedor Python">'
-    h += '<label>Valor (R$) *</label><input id="valor" type="number" step="0.01" required placeholder="ex: 1500">'
-    h += '<div style="margin-top:12px"><button class="btn" type="submit">Adicionar lançamento</button></div>'
-    h += '<div class="mensagem" id="msg"></div></form></div>'
-    if not lancs:
-        h += '<div class="painel"><p style="color:#8fa3c0">Nenhum lançamento financeiro ainda.</p></div>'
-    else:
-        h += '<div class="painel"><h4>Lançamentos</h4><table class="tabela"><thead><tr><th>Vaga</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Status</th><th>NF</th><th>Ações</th></tr></thead><tbody>'
-        for f in lancs:
-            v = Vaga.query.get(f.vaga_id)
-            nf = f.nota_fiscal or '—'
-            acoes = ''
-            if f.status in ('pendente', 'emitido'):
-                acoes += '<button class="kbtn" onclick="pagar(' + str(f.id) + ')">✅ Pagar</button>'
-            if not f.nota_fiscal:
-                acoes += '<button class="kbtn" onclick="emitirNF(' + str(f.id) + ')">🧾 Emitir NF</button>'
-            h += ('<tr><td>' + (v.titulo if v else '-') + '</td><td>' + TIPO_FINANCA.get(f.tipo, f.tipo) + '</td>'
-                  '<td>' + (f.descricao or '') + '</td><td><b style="color:#22d3ee">' + texto_int(f.valor) + '</b></td>'
-                  '<td><span class="pill ' + f.status + '">' + f.status + '</span></td><td>' + nf + '</td>'
-                  '<td><div class="kbtns">' + acoes + '</div></td></tr>')
-        h += '</tbody></table></div>'
-    h += ('<script>'
-          'document.getElementById("f").onsubmit=function(e){e.preventDefault();'
-          'fetch("/api/financas/cadastrar",{method:"POST",headers:{"Content-Type":"application/json"},'
-          'body:JSON.stringify({vaga_id:document.getElementById("vaga_id").value,'
-          'tipo:document.getElementById("tipo").value,descricao:document.getElementById("descricao").value,'
-          'valor:document.getElementById("valor").value})})'
-          '.then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})'
-          '.then(function(res){var m=document.getElementById("msg");if(res.ok){m.className="mensagem ok";'
-          'm.innerHTML="✅ Lançamento adicionado!";setTimeout(function(){location.reload();},600);}'
-          'else{m.className="mensagem erro";m.innerHTML="❌ "+(res.j.erro||"Erro");}});};'
-          'function pagar(fid){fetch("/api/financas/"+fid+"/pagar",{method:"POST"}).then(function(r){return r.json();})'
-          '.then(function(j){if(j.ok){location.reload();}else{alert(j.erro);}});}'
-          'function emitirNF(fid){fetch("/api/financas/"+fid+"/emitir-nf",{method:"POST"}).then(function(r){return r.json();})'
-          '.then(function(j){if(j.ok){alert(j.msg);location.reload();}else{alert(j.erro);}});}</script>')
-    return pagina(h, '/financeiro')
-
-@app.route('/api/financas/cadastrar', methods=['POST'])
-def api_financa_cadastrar():
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    d = request.get_json(force=True)
-    v = Vaga.query.get(d.get('vaga_id', type=int))
-    if not v:
-        return jsonify({'erro': 'Selecione a vaga'}), 400
-    valor = parse_float(d.get('valor'))
-    if valor is None or valor < 0:
-        return jsonify({'erro': 'Valor inválido'}), 400
-    f = Financa(vaga_id=v.id, tipo=(d.get('tipo') or 'custo_vaga'),
-                descricao=(d.get('descricao') or '').strip(), valor=valor, status='pendente')
-    db.session.add(f)
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Lançamento adicionado'})
-
-@app.route('/api/financas/<int:fid>/pagar', methods=['POST'])
-def api_financa_pagar(fid):
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    f = Financa.query.get(fid)
-    if not f:
-        return jsonify({'erro': 'Lançamento não encontrado'}), 404
-    f.status = 'pago'
-    f.paga_em = datetime.utcnow()
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Lançamento marcado como pago'})
-
-@app.route('/api/financas/<int:fid>/emitir-nf', methods=['POST'])
-def api_financa_emitir_nf(fid):
-    u = usuario_atual()
-    if not u or u.tipo not in ('admin', 'empresa'):
-        return jsonify({'erro': 'Acesso restrito'}), 403
-    f = Financa.query.get(fid)
-    if not f:
-        return jsonify({'erro': 'Lançamento não encontrado'}), 404
-    if f.nota_fiscal:
-        return jsonify({'erro': 'NF já emitida: ' + f.nota_fiscal}), 400
-    ano = datetime.utcnow().year
-    seq = Financa.query.filter(Financa.nota_fiscal.isnot(None)).count() + 1
-    f.nota_fiscal = 'NF-' + str(ano) + '-' + str(seq).zfill(4)
-    f.status = 'emitido'
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'NF emitida: ' + f.nota_fiscal, 'nota_fiscal': f.nota_fiscal})
-
-# ================= V10: MIGRACAO =================
+# ================= INICIO =================
 with app.app_context():
     db.create_all()
+    try:
+        db.session.execute(text("ALTER TABLE candidatura ADD COLUMN IF NOT EXISTS etapa VARCHAR(20) DEFAULT 'triagem'"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
     try:
         db.session.execute(text("ALTER TABLE candidatura ADD COLUMN IF NOT EXISTS etapa_atualizada_em DATETIME"))
         db.session.commit()
     except Exception:
         db.session.rollback()
-    for _v in Vaga.query.all():
-        criar_etapas_padrao(_v.id)
-# ================= V11: GRUPOS E PERMISSOES (APIS) =================
-@app.route('/api/admin/grupos/permissoes', methods=['POST'])
-def api_admin_grupo_permissoes():
-    u = usuario_atual()
-    if not u or u.tipo != 'admin':
-        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
-    d = request.get_json(force=True)
-    grupo = (d.get('grupo') or '').strip()
-    if grupo not in GRUPOS:
-        return jsonify({'erro': 'Grupo inválido'}), 400
-    perms = d.get('permissoes') or {}
-    for mod in MODULOS_GERENCIAVEIS:
-        gp = GrupoPermissao.query.filter_by(grupo=grupo, modulo=mod).first()
-        if not gp:
-            gp = GrupoPermissao(grupo=grupo, modulo=mod)
-            db.session.add(gp)
-        if mod in perms:
-            gp.habilitado = bool(perms[mod])
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Permissões do grupo salvas!'})
-
-@app.route('/api/admin/usuario/grupo', methods=['POST'])
-def api_admin_usuario_grupo():
-    u = usuario_atual()
-    if not u or u.tipo != 'admin':
-        return jsonify({'erro': 'Acesso restrito ao administrador'}), 403
-    d = request.get_json(force=True)
-    alvo = Usuario.query.get(d.get('usuario_id', type=int))
-    if not alvo or alvo.tipo == 'admin':
-        return jsonify({'erro': 'Usuário inválido'}), 400
-    grupo = (d.get('grupo') or '').strip()
-    if grupo not in GRUPOS:
-        return jsonify({'erro': 'Grupo inválido'}), 400
-    alvo.grupo = grupo
-    if 'ativo' in d:
-        alvo.ativo = bool(d.get('ativo'))
-    db.session.commit()
-    return jsonify({'ok': True, 'msg': 'Usuário atualizado!'})
-
-# ================= V11: MIGRACAO DO CAMPO GRUPO =================
-with app.app_context():
     try:
-        db.session.execute(text("ALTER TABLE usuario ADD COLUMN IF NOT EXISTS grupo VARCHAR(30)"))
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-# ================= INICIO =================
-with app.app_context():
-    db.create_all()
-    try:
-        db.session.execute("ALTER TABLE candidatura ADD COLUMN IF NOT EXISTS etapa VARCHAR(20) DEFAULT 'triagem'")
+        db.session.execute(text("ALTER TABLE usuario ADD COLUMN IF NOT EXISTS grupo VARCHAR(20) DEFAULT 'candidato'"))
         db.session.commit()
     except Exception:
         db.session.rollback()
     criar_dados_iniciais()
     garantir_dados_demo()
     garantir_permissoes()
+    for _v in Vaga.query.all():
+        criar_etapas_padrao(_v.id)
 
 if __name__ == '__main__':
     print()
     print('=' * 56)
-    print('  🌐 ECOSSISTEMA DE RH INOVADOR v10.0')
-    print('  ⚙️ Permissoes + Edicao de candidatos + Chat')
+    print('  🌐 ECOSSISTEMA DE RH INOVADOR v11.0')
+    print('  ⚙️ Grupos e Permissões + Etapas + Financeiro')
     print('=' * 56)
-    print('  🔗 Menu:        http://localhost:5000')
-    print('  ⚙️ Gerenciar:   http://localhost:5000/gerenciar')
+    print('  🔗 Menu:      http://localhost:5000')
+    print('  ⚙️ Gerenciar: http://localhost:5000/gerenciar')
     print('=' * 56)
     print('  Pressione CTRL+C para parar')
     print()
